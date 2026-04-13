@@ -85,6 +85,10 @@ Feature NTransformFeature::operator()(std::shared_ptr<Chunk> chunk) {
   return super_features;
 }
 
+
+/*
+64bit 的指纹还是截断成了32bit的transform特征，主要是为了适配odess subfeature的特征类型变化，改为vector<uint32_t>，如果不改的话，odess subfeature的特征类型是vector<uint64_t>，就无法直接使用了。
+*/
 Feature OdessFeature::operator()(std::shared_ptr<Chunk> chunk) {
   int features_num = sf_cnt_ * sf_subf_;
   std::vector<uint32_t> sub_features(features_num, 0);
@@ -120,6 +124,68 @@ Feature OdessFeature::operator()(std::shared_ptr<Chunk> chunk) {
   return super_features;
 }
 
+
+// 1  64 bit---32bit 修改点：适配odess subfeature的特征类型变化，改为vector<uint32_t>
+// Feature OdessSubfeatures::operator()(std::shared_ptr<Chunk> chunk) {
+//   int mask_ = default_odess_mask;
+//   int features_num = 12;
+//   //std::vector<uint64_t> sub_features(features_num, 0);
+//   std::vector<uint32_t> sub_features(features_num, 0);
+
+//   int chunk_length = chunk->len();
+//   uint8_t *content = chunk->buf();
+//   uint32_t finger_print = 0;
+//   // calculate sub features.
+//   for (int i = 0; i < chunk_length; i++) {
+//     finger_print = (finger_print << 1) + GEAR_TABLE[content[i]];
+//     if ((finger_print & mask_) == 0) {
+//       for (int j = 0; j < features_num; j++) {
+//         //const uint64_t transform = (M[j] * finger_print + A[j]);
+//         const uint32_t transform = (M[j] * finger_print + A[j]);
+//         // we need to guarantee that when sub_features[i] is not inited,
+//         // always set its value
+//         if (sub_features[j] >= transform || 0 == sub_features[j])
+//           sub_features[j] = transform;
+//       }
+//     }
+//   }
+
+//   return sub_features;
+// }
+
+
+// 1 /*Palantir提取分层特征*/
+// Feature PalantirFeature::operator()(std::shared_ptr<Chunk> chunk) {
+//   // 修改点 1：接收的类型必须改为 uint32_t
+//   auto sub_features = std::get<std::vector<uint32_t>>(get_sub_features_(chunk));
+//   std::vector<std::vector<uint64_t>> results; // 超级特征仍然保持 uint64_t
+
+//   auto group = [&](int sf_cnt, int sf_subf) -> std::vector<uint64_t> {
+//     std::vector<uint64_t> super_features(sf_cnt, 0);
+//     auto hash_buf = (const uint8_t *const)(sub_features.data());
+    
+//     for (int i = 0; i < sf_cnt; i++) {
+//       uint64_t hash_value = 0;
+//       // 修改点 2：步长偏移量改为 sizeof(uint32_t)
+//       auto this_hash_buf = hash_buf + i * sf_subf * sizeof(uint32_t);
+      
+//       // 修改点 3（修复 Bug）：从 j = 0 开始，边界改为 sizeof(uint32_t)
+//       for (int j = 0; j < sf_subf * sizeof(uint32_t); j++) {
+//         hash_value = (hash_value << 1) + GEAR_TABLE[this_hash_buf[j]];
+//       }
+//       super_features[i] = hash_value;
+//     }
+//     return super_features;
+//   };
+
+//   results.push_back(group(3, 4));
+//   results.push_back(group(4, 3));
+//   results.push_back(group(6, 2));
+//   return results;
+// }
+
+
+// 原版（已注释掉）
 Feature OdessSubfeatures::operator()(std::shared_ptr<Chunk> chunk) {
   int mask_ = default_odess_mask;
   int features_num = 12;
@@ -133,7 +199,7 @@ Feature OdessSubfeatures::operator()(std::shared_ptr<Chunk> chunk) {
     finger_print = (finger_print << 1) + GEAR_TABLE[content[i]];
     if ((finger_print & mask_) == 0) {
       for (int j = 0; j < features_num; j++) {
-        const uint64_t transform = (M[j] * finger_print + A[j]);
+        const uint64_t transform = (M[j] * finger_print + A[j]);     
         // we need to guarantee that when sub_features[i] is not inited,
         // always set its value
         if (sub_features[j] >= transform || 0 == sub_features[j])
@@ -145,6 +211,8 @@ Feature OdessSubfeatures::operator()(std::shared_ptr<Chunk> chunk) {
   return sub_features;
 }
 
+
+//原版
 Feature PalantirFeature::operator()(std::shared_ptr<Chunk> chunk) {
   auto sub_features = std::get<std::vector<uint64_t>>(get_sub_features_(chunk));
   std::vector<std::vector<uint64_t>> results;

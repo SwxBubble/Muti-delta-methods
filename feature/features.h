@@ -11,7 +11,13 @@ constexpr int default_odess_sf_cnt = 3;
 constexpr int default_odess_sf_subf = 4;
 constexpr uint64_t default_odess_mask = (1 << 7) - 1;
 class Chunk;
+// 原版
+// using Feature = std::variant<std::vector<std::vector<uint64_t>>,
+//                              std::vector<uint64_t>
+//                              >;
+
 using Feature = std::variant<std::vector<std::vector<uint64_t>>,
+                             std::vector<uint32_t>,
                              std::vector<uint64_t>
                              >;
 

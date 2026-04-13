@@ -23,7 +23,11 @@ public:
   bool DumpToFile(const std::string &path) { return true;}
 
 private:
+  //原版
   std::vector<std::unordered_map<uint64_t, std::vector<chunk_id>>> index_;
+
+  //修改1 适应odess subfeature的特征类型变化 如果要用32bit的版本 ，就改为vector<uint32_t>
+  //std::vector<std::unordered_map<uint32_t, std::vector<chunk_id>>> index_;
   const int feature_count_;
 };
 } // namespace Delta

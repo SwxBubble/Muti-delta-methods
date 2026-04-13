@@ -6,6 +6,8 @@
 #include "encoder/xdelta.h"
 #include "index/best_fit_index.h"
 #include "index/palantir_index.h"
+#include "index/palantir_index_2.h"  // <--- 添加这一行 palantir_index_2 每层选择匹配特征最多的块，且每层的及格线（阈值）不同，形成瀑布流式的多层过滤机制
+#include "index/palantir_index_3.h"
 #include "index/super_feature_index.h"
 #include "storage/storage.h"
 #include <glog/logging.h>
@@ -138,9 +140,10 @@ DeltaCompression::DeltaCompression() {
       feature_index_map = {
           declare_feature_type(finesse, FinesseFeature, SuperFeatureIndex),
           declare_feature_type(odess, OdessFeature, SuperFeatureIndex),
-          declare_feature_type(n-transform, NTransformFeature,
-                               SuperFeatureIndex),
-          declare_feature_type(palantir, PalantirFeature, PalantirIndex),
+          declare_feature_type(n-transform, NTransformFeature,SuperFeatureIndex),
+          declare_feature_type(palantir, PalantirFeature, PalantirIndex), //原版
+          declare_feature_type(palantir2, PalantirFeature, PalantirIndex2), // <---  PalantirIndex2 
+          declare_feature_type(palantir3, PalantirFeature, PalantirIndex3), // <---  PalantirIndex3 在2的基础上增加了每个 posting list 的容量限制，降低陈旧候选的噪声
           declare_feature_type(bestfit, OdessSubfeatures, BestFitIndex)};
 
   if (!feature_index_map.count(feature_type))
