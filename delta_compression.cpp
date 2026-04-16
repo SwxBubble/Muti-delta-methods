@@ -10,6 +10,12 @@
 #include "index/palantir_index_3.h"
 #include "index/palantir_index_4.h"
 #include "index/palantir_index_5.h"
+#include "index/best_fit_index_2.h"
+#include "index/best_fit_index_3.h"
+
+#include "feature/argus_feature.h"
+#include "index/argus_index.h"
+
 #include "index/super_feature_index.h"
 #include "storage/storage.h"
 #include <glog/logging.h>
@@ -148,6 +154,9 @@ DeltaCompression::DeltaCompression() {
           //declare_feature_type(palantir3, PalantirFeature, PalantirIndex3), // <---  PalantirIndex3 在2的基础上增加了每个 posting list 的容量限制，降低陈旧候选的噪声
           //declare_feature_type(palantir4, PalantirFeature, PalantirIndex4), // <---  PalantirIndex4 在2的基础上修改了跨界查找特征
           declare_feature_type(palantir5, PalantirFeature, PalantirIndex5), // <---  PalantirIndex5 在4的基础上进一步优化了性能
+          declare_feature_type(bestfit2, OdessSubfeatures, BestFitIndex2),  // <---  BestFitIndex2 适应 OdessSubfeatures 的特征类型变化，改为 uint32_t
+          declare_feature_type(bestfit3, OdessSubfeatures, BestFitIndex3), // <---  BestFitIndex3 适应 OdessSubfeatures 的特征类型变化，改为 uint64_t，并且增加了投票机制和黄金阈值，提升匹配质量
+          declare_feature_type(argus, ArgusFeature, ArgusIndex), // <---  ArgusFeature + ArgusIndex 实现了论文中基于 min-hash 的 Argus 方法，作为一个完全不同设计思路的对照组加入实验
           declare_feature_type(bestfit, OdessSubfeatures, BestFitIndex)};
 
   if (!feature_index_map.count(feature_type))

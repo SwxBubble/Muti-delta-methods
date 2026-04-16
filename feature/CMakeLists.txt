@@ -1,1 +1,4 @@
-add_library(feature STATIC features.cpp)
+add_library(feature STATIC
+    features.cpp
+    argus_feature.cpp
+)
