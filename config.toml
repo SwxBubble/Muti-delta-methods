@@ -9,8 +9,15 @@ chunk_meta_path = "./test_data/default.meta"
 file_meta_path = "./test_data/default.file"
 
 [feature]
-# one of finesse, odess, n-transform, palantir, bestfit, palantir2 ,argus
-type = "argus"
+# one of finesse, odess, n-transform, palantir, bestfit, palantir2 ,argus,cdfe-ordered-v1
+type = "cdfe-ordered-v1"
+feature_count = 12
+cdfe_min_subblock_size = 64
+cdfe_avg_subblock_size = 128
+cdfe_max_subblock_size = 512
+cdfe_boundary_mask = 31
+match_threshold = 2
+
 
 [chunker]
 # one of fast-cdc, rabin-cdc

@@ -1,28 +1,30 @@
 #include "delta_compression.h"
+
 #include "chunk/chunk.h"
 #include "chunk/fast_cdc.h"
 #include "chunk/rabin_cdc.h"
 #include "config.h"
 #include "encoder/xdelta.h"
+#include "feature/argus_feature.h"
+#include "index/argus_index.h"
 #include "index/best_fit_index.h"
 #include "index/palantir_index.h"
-#include "index/palantir_index_2.h"  // <--- 添加这一行 palantir_index_2 每层选择匹配特征最多的块，且每层的及格线（阈值）不同，形成瀑布流式的多层过滤机制
+#include "index/palantir_index_2.h"
 #include "index/palantir_index_3.h"
 #include "index/palantir_index_4.h"
 #include "index/palantir_index_5.h"
-#include "index/best_fit_index_2.h"
-#include "index/best_fit_index_3.h"
-
-#include "feature/argus_feature.h"
-#include "index/argus_index.h"
-
 #include "index/super_feature_index.h"
 #include "storage/storage.h"
+
 #include <glog/logging.h>
+
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
+
 namespace Delta {
 void DeltaCompression::AddFile(const std::string &file_name) {
   FileMeta file_meta;
@@ -31,34 +33,37 @@ void DeltaCompression::AddFile(const std::string &file_name) {
   this->chunker_->ReinitWithFile(file_name);
   while (true) {
     auto chunk = chunker_->GetNextChunk();
-    if (nullptr == chunk)
+    if (chunk == nullptr) {
       break;
-    if (-1 == file_meta.start_chunk_id)
+    }
+    if (file_meta.start_chunk_id == static_cast<uint32_t>(-1)) {
       file_meta.start_chunk_id = chunk->id();
+    }
+
     uint32_t dedup_base_id = dedup_->ProcessChunk(chunk);
     total_size_origin_ += chunk->len();
-    // duplicate chunk
     if (dedup_base_id != chunk->id()) {
       storage_->WriteDuplicateChunk(chunk, dedup_base_id);
       duplicate_chunk_count_++;
       continue;
     }
 
-    auto write_base_chunk = [this](const std::shared_ptr<Chunk> &chunk) {
-      storage_->WriteBaseChunk(chunk);
+    auto write_base_chunk = [this](const std::shared_ptr<Chunk> &chunk_ptr) {
+      storage_->WriteBaseChunk(chunk_ptr);
       base_chunk_count_++;
-      total_size_compressed_ += chunk->len();
+      total_size_compressed_ += chunk_ptr->len();
     };
 
-    auto write_delta_chunk = [this](const std::shared_ptr<Chunk> &chunk,
-                                    const std::shared_ptr<Chunk> &delta_chunk,
-                                    const uint32_t base_chunk_id) {
-      chunk_size_before_delta_ += chunk->len();
-      storage_->WriteDeltaChunk(delta_chunk, base_chunk_id);
-      delta_chunk_count_++;
-      chunk_size_after_delta_ += delta_chunk->len();
-      total_size_compressed_ += delta_chunk->len();
-    };
+    auto write_delta_chunk =
+        [this](const std::shared_ptr<Chunk> &chunk_ptr,
+               const std::shared_ptr<Chunk> &delta_chunk,
+               const uint32_t base_chunk_id) {
+          chunk_size_before_delta_ += chunk_ptr->len();
+          storage_->WriteDeltaChunk(delta_chunk, base_chunk_id);
+          delta_chunk_count_++;
+          chunk_size_after_delta_ += delta_chunk->len();
+          total_size_compressed_ += delta_chunk->len();
+        };
 
     auto feature = (*feature_)(chunk);
     auto base_chunk_id = index_->GetBaseChunkID(feature);
@@ -78,7 +83,7 @@ void DeltaCompression::AddFile(const std::string &file_name) {
 
 DeltaCompression::~DeltaCompression() {
   auto print_ratio = [](size_t a, size_t b) {
-    double ratio = (double)a / (double)b;
+    double ratio = static_cast<double>(a) / static_cast<double>(b);
     std::cout << std::fixed << std::setprecision(1);
     std::cout << "(" << ratio * 100 << "%)" << std::endl;
     std::cout << std::defaultfloat;
@@ -100,18 +105,15 @@ DeltaCompression::~DeltaCompression() {
   print_ratio(chunk_size_after_delta_, chunk_size_before_delta_);
 }
 
-#define declare_feature_type(NAME, FEATURE, INDEX)                             \
-  {                                                                            \
-#NAME, \
-[]() -> FeatureIndex { \
-  return {std::make_unique<FEATURE>(), \
-          std::make_unique<INDEX>()}; \
-}                                                                       \
+#define DECLARE_FEATURE_TYPE(NAME, FEATURE, INDEX)                              \
+  {                                                                             \
+    #NAME, []() -> FeatureIndex {                                               \
+      return {std::make_unique<FEATURE>(), std::make_unique<INDEX>()};          \
+    }                                                                           \
   }
 
 DeltaCompression::DeltaCompression() {
   auto config = Config::Instance().get();
-  auto index_path = *config->get_as<std::string>("index_path");
   auto chunk_data_path = *config->get_as<std::string>("chunk_data_path");
   auto chunk_meta_path = *config->get_as<std::string>("chunk_meta_path");
   auto file_meta_path = *config->get_as<std::string>("file_meta_path");
@@ -129,7 +131,7 @@ DeltaCompression::DeltaCompression() {
       LOG(INFO) << "Add RabinCDC chunker, min_chunk_size=" << min_chunk_size
                 << " max_chunk_size=" << max_chunk_size
                 << " stop_mask=" << stop_mask;
-    } else if (chunker_type == "fast-cdc") {
+    } else {
       this->chunker_ =
           std::make_unique<FastCDC>(min_chunk_size, max_chunk_size, stop_mask);
       LOG(INFO) << "Add FastCDC chunker, min_chunk_size=" << min_chunk_size
@@ -140,30 +142,58 @@ DeltaCompression::DeltaCompression() {
     LOG(FATAL) << "Unknown chunker type " << chunker_type;
   }
 
-  auto feature = config->get_table("feature");
-  auto feature_type = *feature->get_as<std::string>("type");
+  auto feature_table = config->get_table("feature");
+  auto feature_type = *feature_table->get_as<std::string>("type");
   using FeatureIndex =
       std::pair<std::unique_ptr<FeatureCalculator>, std::unique_ptr<Index>>;
-  std::unordered_map<std::string, std::function<FeatureIndex()>>
-      feature_index_map = {
-          declare_feature_type(finesse, FinesseFeature, SuperFeatureIndex),
-          declare_feature_type(odess, OdessFeature, SuperFeatureIndex),
-          declare_feature_type(n-transform, NTransformFeature,SuperFeatureIndex),
-          //declare_feature_type(palantir, PalantirFeature, PalantirIndex), //原版
-          //declare_feature_type(palantir2, PalantirFeature, PalantirIndex2), // <---  PalantirIndex2 
-          //declare_feature_type(palantir3, PalantirFeature, PalantirIndex3), // <---  PalantirIndex3 在2的基础上增加了每个 posting list 的容量限制，降低陈旧候选的噪声
-          //declare_feature_type(palantir4, PalantirFeature, PalantirIndex4), // <---  PalantirIndex4 在2的基础上修改了跨界查找特征
-          declare_feature_type(palantir5, PalantirFeature, PalantirIndex5), // <---  PalantirIndex5 在4的基础上进一步优化了性能
-          declare_feature_type(bestfit2, OdessSubfeatures, BestFitIndex2),  // <---  BestFitIndex2 适应 OdessSubfeatures 的特征类型变化，改为 uint32_t
-          declare_feature_type(bestfit3, OdessSubfeatures, BestFitIndex3), // <---  BestFitIndex3 适应 OdessSubfeatures 的特征类型变化，改为 uint64_t，并且增加了投票机制和黄金阈值，提升匹配质量
-          declare_feature_type(argus, ArgusFeature, ArgusIndex), // <---  ArgusFeature + ArgusIndex 实现了论文中基于 min-hash 的 Argus 方法，作为一个完全不同设计思路的对照组加入实验
-          declare_feature_type(bestfit, OdessSubfeatures, BestFitIndex)};
 
-  if (!feature_index_map.count(feature_type))
-    LOG(FATAL) << "Unknown feature type " << feature_type;
-  auto [feature_ptr, index_ptr] = feature_index_map[feature_type]();
-  this->feature_ = std::move(feature_ptr);
-  this->index_ = std::move(index_ptr);
+  std::unordered_map<std::string, std::function<FeatureIndex()>> feature_index_map = {
+      DECLARE_FEATURE_TYPE(finesse, FinesseFeature, SuperFeatureIndex),
+      DECLARE_FEATURE_TYPE(odess, OdessFeature, SuperFeatureIndex),
+      DECLARE_FEATURE_TYPE(n-transform, NTransformFeature, SuperFeatureIndex),
+      DECLARE_FEATURE_TYPE(palantir5, PalantirFeature, PalantirIndex5),
+      DECLARE_FEATURE_TYPE(argus, ArgusFeature, ArgusIndex),
+      DECLARE_FEATURE_TYPE(bestfit, OdessSubfeatures, BestFitIndex),
+  };
+
+  if (feature_type == "cdfe-ordered-v1") {
+    const int feature_count =
+        feature_table->get_as<int64_t>("feature_count")
+            .value_or(default_cdfe_ordered_feature_count);
+    const int min_subblock_size =
+        feature_table->get_as<int64_t>("cdfe_min_subblock_size")
+            .value_or(default_cdfe_ordered_min_subblock);
+    const int avg_subblock_size =
+        feature_table->get_as<int64_t>("cdfe_avg_subblock_size")
+            .value_or(default_cdfe_ordered_avg_subblock);
+    const int max_subblock_size =
+        feature_table->get_as<int64_t>("cdfe_max_subblock_size")
+            .value_or(default_cdfe_ordered_max_subblock);
+    const uint64_t boundary_mask =
+        feature_table->get_as<int64_t>("cdfe_boundary_mask")
+            .value_or(default_cdfe_ordered_boundary_mask);
+    const int match_threshold =
+        feature_table->get_as<int64_t>("match_threshold").value_or(4);
+
+    this->feature_ = std::make_unique<CDFEOrderedFeature>(
+        feature_count, min_subblock_size, avg_subblock_size,
+        max_subblock_size, boundary_mask);
+    this->index_ = std::make_unique<BestFitIndex>(feature_count, match_threshold);
+
+    LOG(INFO) << "Add CDFE-Ordered-v1 feature extractor, feature_count="
+              << feature_count << " min=" << min_subblock_size
+              << " avg=" << avg_subblock_size
+              << " max=" << max_subblock_size
+              << " boundary_mask=" << boundary_mask
+              << " match_threshold=" << match_threshold;
+  } else {
+    if (!feature_index_map.count(feature_type)) {
+      LOG(FATAL) << "Unknown feature type " << feature_type;
+    }
+    auto [feature_ptr, index_ptr] = feature_index_map[feature_type]();
+    this->feature_ = std::move(feature_ptr);
+    this->index_ = std::move(index_ptr);
+  }
 
   this->dedup_ = std::make_unique<Dedup>(dedup_index_path);
 
