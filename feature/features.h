@@ -2,6 +2,9 @@
 #include <memory>
 #include <variant>
 #include <vector>
+
+#include <cstdint>
+
 namespace Delta {
 constexpr int default_finesse_sf_cnt = 3;
 // every super feature is grouped with 4 sub-features by default
@@ -16,10 +19,30 @@ class Chunk;
 //                              std::vector<uint64_t>
 //                              >;
 
+// using Feature = std::variant<std::vector<std::vector<uint64_t>>,
+//                              std::vector<uint32_t>,
+//                              std::vector<uint64_t>
+//                              >;
+
+//cdfe-v2
+struct SubblockSpan {
+  int start;
+  int len;
+  int rank;
+};
+
+struct CDFELocalFeature {
+  uint64_t value;
+  uint16_t subblock_rank;
+  float norm_pos;
+};
+
+using CDFESetOrderFeature = std::vector<CDFELocalFeature>;
+
 using Feature = std::variant<std::vector<std::vector<uint64_t>>,
                              std::vector<uint32_t>,
-                             std::vector<uint64_t>
-                             >;
+                             std::vector<uint64_t>,
+                             CDFESetOrderFeature>;
 
 class FeatureCalculator {
 public:

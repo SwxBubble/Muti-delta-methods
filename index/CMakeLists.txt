@@ -3,7 +3,6 @@ add_library(index STATIC super_feature_index.cpp palantir_index.cpp
                             palantir_index_3.cpp
                             palantir_index_4.cpp
                             palantir_index_5.cpp
-                            best_fit_index_2.cpp
-                            best_fit_index_3.cpp
-                            argus_index.cpp)
+                            argus_index.cpp
+                            cdfe_setorder_v2_index.cpp)
 target_link_libraries(index glog gflags feature)

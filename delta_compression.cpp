@@ -10,8 +10,6 @@
 #include "index/palantir_index_3.h"
 #include "index/palantir_index_4.h"
 #include "index/palantir_index_5.h"
-#include "index/best_fit_index_2.h"
-#include "index/best_fit_index_3.h"
 
 #include "feature/argus_feature.h"
 #include "index/argus_index.h"
@@ -21,8 +19,14 @@
 #include <glog/logging.h>
 #include <iomanip>
 #include <iostream>
+
+#include <limits>
+
 #include <string>
 #include <vector>
+//cdfe-v2
+#include "feature/cdfe.h"
+#include "index/cdfe_setorder_v2_index.h"
 namespace Delta {
 void DeltaCompression::AddFile(const std::string &file_name) {
   FileMeta file_meta;
@@ -60,17 +64,63 @@ void DeltaCompression::AddFile(const std::string &file_name) {
       total_size_compressed_ += delta_chunk->len();
     };
 
+    // auto feature = (*feature_)(chunk);
+    // auto base_chunk_id = index_->GetBaseChunkID(feature);
+    // if (!base_chunk_id.has_value()) {
+    //   index_->AddFeature(feature, chunk->id());
+    //   write_base_chunk(chunk);
+    //   continue;
+    // }
+
+    // auto delta_chunk =
+    //     storage_->GetDeltaEncodedChunk(chunk, base_chunk_id.value());
+    // write_delta_chunk(chunk, delta_chunk, base_chunk_id.value());
+
+    //cdfe-v2
     auto feature = (*feature_)(chunk);
-    auto base_chunk_id = index_->GetBaseChunkID(feature);
-    if (!base_chunk_id.has_value()) {
+
+    // 默认走旧索引时，topk_candidates=1；
+    // 只有 cdfe-setorder-v2 才会真正返回多个候选
+    auto cfg = Config::Instance().get();
+    auto feature_cfg = cfg->get_table("feature");
+    size_t topk_candidates =
+        static_cast<size_t>(
+            feature_cfg->get_as<int64_t>("topk_candidates").value_or(1));
+
+    auto candidate_ids = index_->GetBaseChunkCandidates(feature, topk_candidates);
+
+    if (candidate_ids.empty()) {
       index_->AddFeature(feature, chunk->id());
       write_base_chunk(chunk);
       continue;
     }
 
-    auto delta_chunk =
-        storage_->GetDeltaEncodedChunk(chunk, base_chunk_id.value());
-    write_delta_chunk(chunk, delta_chunk, base_chunk_id.value());
+    // 对 top-k 候选逐个做真实 delta 编码，选最优 base
+    std::shared_ptr<Chunk> best_delta_chunk = nullptr;
+    chunk_id best_base_id = 0;
+    size_t best_delta_size = std::numeric_limits<size_t>::max();
+
+    for (auto cid : candidate_ids) {
+      auto delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
+      if (delta_chunk &&
+          static_cast<size_t>(delta_chunk->len()) < best_delta_size) {
+        best_delta_size = static_cast<size_t>(delta_chunk->len());
+        best_delta_chunk = delta_chunk;
+        best_base_id = cid;
+      }
+    }
+
+    // 如果最优 delta 仍然不划算，则退回写 base chunk
+    if (!best_delta_chunk ||
+        best_delta_size >= static_cast<size_t>(chunk->len())) {
+      index_->AddFeature(feature, chunk->id());
+      write_base_chunk(chunk);
+      continue;
+    }
+
+    write_delta_chunk(chunk, best_delta_chunk, best_base_id);
+
+    //**************** */
     file_meta.end_chunk_id = chunk->id();
   }
   file_meta_writer_.Write(file_meta);
@@ -142,6 +192,8 @@ DeltaCompression::DeltaCompression() {
 
   auto feature = config->get_table("feature");
   auto feature_type = *feature->get_as<std::string>("type");
+
+  
   using FeatureIndex =
       std::pair<std::unique_ptr<FeatureCalculator>, std::unique_ptr<Index>>;
   std::unordered_map<std::string, std::function<FeatureIndex()>>
@@ -154,16 +206,69 @@ DeltaCompression::DeltaCompression() {
           //declare_feature_type(palantir3, PalantirFeature, PalantirIndex3), // <---  PalantirIndex3 在2的基础上增加了每个 posting list 的容量限制，降低陈旧候选的噪声
           //declare_feature_type(palantir4, PalantirFeature, PalantirIndex4), // <---  PalantirIndex4 在2的基础上修改了跨界查找特征
           declare_feature_type(palantir5, PalantirFeature, PalantirIndex5), // <---  PalantirIndex5 在4的基础上进一步优化了性能
-          declare_feature_type(bestfit2, OdessSubfeatures, BestFitIndex2),  // <---  BestFitIndex2 适应 OdessSubfeatures 的特征类型变化，改为 uint32_t
-          declare_feature_type(bestfit3, OdessSubfeatures, BestFitIndex3), // <---  BestFitIndex3 适应 OdessSubfeatures 的特征类型变化，改为 uint64_t，并且增加了投票机制和黄金阈值，提升匹配质量
           declare_feature_type(argus, ArgusFeature, ArgusIndex), // <---  ArgusFeature + ArgusIndex 实现了论文中基于 min-hash 的 Argus 方法，作为一个完全不同设计思路的对照组加入实验
           declare_feature_type(bestfit, OdessSubfeatures, BestFitIndex)};
+  //cdfe-v2      
+  if (feature_type == "cdfe-setorder-v2") {
+  CDFEParams params;
+  params.min_subblock_size =
+      feature->get_as<int64_t>("min_subblock_size").value_or(64);
+  params.max_subblock_size =
+      feature->get_as<int64_t>("max_subblock_size").value_or(512);
+  params.boundary_divisor =
+      static_cast<uint64_t>(
+          feature->get_as<int64_t>("boundary_divisor").value_or(16));
 
+  params.split_window_size =
+      feature->get_as<int64_t>("split_window_size").value_or(16);
+  params.feature_window_size =
+      feature->get_as<int64_t>("feature_window_size").value_or(16);
+  params.local_features_per_subblock =
+      feature->get_as<int64_t>("local_features_per_subblock").value_or(2);
+
+  size_t topk_candidates =
+      static_cast<size_t>(
+          feature->get_as<int64_t>("topk_candidates").value_or(4));
+  int min_overlap_hits =
+      feature->get_as<int64_t>("min_overlap_hits").value_or(3);
+  float pos_tolerance =
+      static_cast<float>(
+          feature->get_as<double>("pos_tolerance").value_or(0.15));
+  size_t hot_posting_limit =
+      static_cast<size_t>(
+          feature->get_as<int64_t>("hot_posting_limit").value_or(256));
+  float order_lambda =
+      static_cast<float>(
+          feature->get_as<double>("order_lambda").value_or(2.0));
+
+  this->feature_ = std::make_unique<CDFESetOrderV2Feature>(params);
+  this->index_ = std::make_unique<CDFESetOrderV2Index>(
+      topk_candidates,
+      min_overlap_hits,
+      pos_tolerance,
+      hot_posting_limit,
+      order_lambda);
+
+  LOG(INFO) << "Add CDFE-SetOrder-v2 feature extractor"
+            << " min_subblock_size=" << params.min_subblock_size
+            << " max_subblock_size=" << params.max_subblock_size
+            << " boundary_divisor=" << params.boundary_divisor
+            << " split_window_size=" << params.split_window_size
+            << " feature_window_size=" << params.feature_window_size
+            << " topk_candidates=" << topk_candidates;
+} else {
   if (!feature_index_map.count(feature_type))
     LOG(FATAL) << "Unknown feature type " << feature_type;
+
   auto [feature_ptr, index_ptr] = feature_index_map[feature_type]();
   this->feature_ = std::move(feature_ptr);
   this->index_ = std::move(index_ptr);
+}        
+  // if (!feature_index_map.count(feature_type))
+  //   LOG(FATAL) << "Unknown feature type " << feature_type;
+  // auto [feature_ptr, index_ptr] = feature_index_map[feature_type]();
+  // this->feature_ = std::move(feature_ptr);
+  // this->index_ = std::move(index_ptr);
 
   this->dedup_ = std::make_unique<Dedup>(dedup_index_path);
 

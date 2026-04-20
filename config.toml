@@ -10,7 +10,22 @@ file_meta_path = "./test_data/default.file"
 
 [feature]
 # one of finesse, odess, n-transform, palantir, bestfit, palantir2 ,argus
-type = "argus"
+type = "cdfe-setorder-v2"
+
+min_subblock_size = 64
+max_subblock_size = 512
+boundary_divisor = 16
+
+split_window_size = 16
+feature_window_size = 16
+local_features_per_subblock = 2
+
+topk_candidates = 4
+min_overlap_hits = 4
+pos_tolerance = 0.15
+hot_posting_limit = 256
+order_lambda = 2.0
+
 
 [chunker]
 # one of fast-cdc, rabin-cdc
