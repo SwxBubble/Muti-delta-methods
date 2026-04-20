@@ -10,7 +10,7 @@ file_meta_path = "./test_data/default.file"
 
 [feature]
 # one of finesse, odess, n-transform, palantir, bestfit, palantir2 ,argus
-type = "argus"
+type = "palantir2"
 
 [chunker]
 # one of fast-cdc, rabin-cdc
