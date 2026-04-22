@@ -9,6 +9,9 @@
 #include <limits>
 #include <vector>
 
+#include <iomanip>
+#include <iostream>
+
 namespace Delta {
 namespace {
 
@@ -39,6 +42,99 @@ Feature CDFESetOrderV2Feature::operator()(std::shared_ptr<Chunk> chunk) {
   return BuildFeatureSet(chunk->buf(), chunk->len());
 }
 
+
+CDFESetOrderV2Feature::~CDFESetOrderV2Feature() {
+  std::cout << "\n[CDFE-SetOrder-v2 Subblock Split Stats]" << std::endl;
+  std::cout << "Total chunks processed: " << total_chunks_ << std::endl;
+  std::cout << "Total subblocks: " << total_subblocks_ << std::endl;
+
+  if (total_subblocks_ == 0) {
+    std::cout << "Boundary-cut subblocks: 0" << std::endl;
+    std::cout << "Forced-cut subblocks: 0" << std::endl;
+    return;
+  }
+
+  auto print_ratio = [](size_t a, size_t b) {
+    double ratio = static_cast<double>(a) / static_cast<double>(b);
+    std::cout << std::fixed << std::setprecision(1)
+              << ratio * 100.0 << "%";
+    std::cout << std::defaultfloat;
+  };
+
+  std::cout << "Boundary-cut subblocks: " << boundary_cut_subblocks_ << " (";
+  print_ratio(boundary_cut_subblocks_, total_subblocks_);
+  std::cout << ")" << std::endl;
+
+  std::cout << "Forced-cut subblocks: " << forced_cut_subblocks_ << " (";
+  print_ratio(forced_cut_subblocks_, total_subblocks_);
+  std::cout << ")" << std::endl;
+
+  if (total_chunks_ > 0) {
+    std::cout << "Average subblocks per chunk: "
+              << std::fixed << std::setprecision(2)
+              << static_cast<double>(total_subblocks_) /
+                     static_cast<double>(total_chunks_)
+              << std::defaultfloat << std::endl;
+  }
+
+  std::cout << std::endl;
+}
+
+
+// std::vector<SubblockSpan>
+// CDFESetOrderV2Feature::SplitIntoSubblocks(const uint8_t *buf,
+//                                           int chunk_len) const {
+//   std::vector<SubblockSpan> res;
+//   if (chunk_len <= 0) {
+//     return res;
+//   }
+
+//   int start = 0;
+//   int rank = 0;
+
+//   while (start < chunk_len) {
+//     const int end_limit = std::min(start + params_.max_subblock_size, chunk_len);
+//     int cut = -1;
+
+//     // 从左往右扫描，找到第一个合法边界
+//     for (int end = start + 1; end <= end_limit; ++end) {
+//       const int cur_len = end - start;
+
+//       if (cur_len < params_.min_subblock_size) {
+//         continue;
+//       }
+
+//       // 只有当前子块内至少有一个完整 split window 时才检查边界
+//       if (cur_len < params_.split_window_size) {
+//         continue;
+//       }
+
+//       const int window_start = end - params_.split_window_size;
+//       const uint64_t fp =
+//           HashWindow(buf + window_start, params_.split_window_size);
+
+//       if (params_.boundary_divisor > 0 &&
+//           (fp % params_.boundary_divisor) == 0) {
+//         cut = end;
+//         break;
+//       }
+//     }
+
+//     // 找不到合法边界则强切
+//     if (cut == -1) {
+//       cut = end_limit;
+//     }
+
+//     res.push_back({start, cut - start, rank});
+//     start = cut;
+//     rank++;
+//   }
+
+//   return res;
+// }
+
+
+
 std::vector<SubblockSpan>
 CDFESetOrderV2Feature::SplitIntoSubblocks(const uint8_t *buf,
                                           int chunk_len) const {
@@ -51,10 +147,12 @@ CDFESetOrderV2Feature::SplitIntoSubblocks(const uint8_t *buf,
   int rank = 0;
 
   while (start < chunk_len) {
-    const int end_limit = std::min(start + params_.max_subblock_size, chunk_len);
-    int cut = -1;
+    const int end_limit =
+        std::min(start + params_.max_subblock_size, chunk_len);
 
-    // 从左往右扫描，找到第一个合法边界
+    int cut = -1;
+    bool hit_boundary = false;
+
     for (int end = start + 1; end <= end_limit; ++end) {
       const int cur_len = end - start;
 
@@ -62,7 +160,6 @@ CDFESetOrderV2Feature::SplitIntoSubblocks(const uint8_t *buf,
         continue;
       }
 
-      // 只有当前子块内至少有一个完整 split window 时才检查边界
       if (cur_len < params_.split_window_size) {
         continue;
       }
@@ -74,13 +171,22 @@ CDFESetOrderV2Feature::SplitIntoSubblocks(const uint8_t *buf,
       if (params_.boundary_divisor > 0 &&
           (fp % params_.boundary_divisor) == 0) {
         cut = end;
+        hit_boundary = true;
         break;
       }
     }
 
-    // 找不到合法边界则强切
     if (cut == -1) {
       cut = end_limit;
+      hit_boundary = false;
+    }
+
+    // 统计
+    total_subblocks_++;
+    if (hit_boundary) {
+      boundary_cut_subblocks_++;
+    } else {
+      forced_cut_subblocks_++;
     }
 
     res.push_back({start, cut - start, rank});
@@ -90,6 +196,9 @@ CDFESetOrderV2Feature::SplitIntoSubblocks(const uint8_t *buf,
 
   return res;
 }
+
+
+
 
 std::array<uint64_t, 2>
 CDFESetOrderV2Feature::ExtractLocalRobustFeatures(const uint8_t *sbuf,
@@ -131,6 +240,9 @@ CDFESetOrderFeature
 CDFESetOrderV2Feature::BuildFeatureSet(const uint8_t *buf,
                                        int chunk_len) const {
   CDFESetOrderFeature feats;
+
+  total_chunks_++;    //计数
+
   auto subblocks = SplitIntoSubblocks(buf, chunk_len);
 
   feats.reserve(subblocks.size() * 2);
@@ -139,19 +251,35 @@ CDFESetOrderV2Feature::BuildFeatureSet(const uint8_t *buf,
     const uint8_t *sbuf = buf + sb.start;
     const int slen = sb.len;
 
+    // auto local = ExtractLocalRobustFeatures(sbuf, slen);
+    // const float norm_pos =
+    //     static_cast<float>(sb.start + sb.len * 0.5f) /
+    //     static_cast<float>(chunk_len);
+
+    // feats.push_back(
+    //     CDFELocalFeature{local[0],
+    //                      static_cast<uint16_t>(sb.rank),
+    //                      norm_pos});
+    // feats.push_back(
+    //     CDFELocalFeature{local[1],
+    //                      static_cast<uint16_t>(sb.rank),
+    //                      norm_pos});
     auto local = ExtractLocalRobustFeatures(sbuf, slen);
     const float norm_pos =
         static_cast<float>(sb.start + sb.len * 0.5f) /
         static_cast<float>(chunk_len);
 
-    feats.push_back(
-        CDFELocalFeature{local[0],
-                         static_cast<uint16_t>(sb.rank),
-                         norm_pos});
-    feats.push_back(
-        CDFELocalFeature{local[1],
-                         static_cast<uint16_t>(sb.rank),
-                         norm_pos});
+    // 至少保证 1，最多不超过 2
+    int k = params_.local_features_per_subblock;
+    if (k < 1) k = 1;
+    if (k > 2) k = 2;
+
+    for (int i = 0; i < k; ++i) {
+      feats.push_back(
+          CDFELocalFeature{local[i],
+                          static_cast<uint16_t>(sb.rank),
+                          norm_pos});
+    }
   }
 
   return feats;

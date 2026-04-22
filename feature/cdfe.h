@@ -24,14 +24,21 @@ class Chunk;
 class CDFESetOrderV2Feature : public FeatureCalculator {
 public:
   explicit CDFESetOrderV2Feature(const CDFEParams &params) : params_(params) {}
+  ~CDFESetOrderV2Feature() override;
 
   Feature operator()(std::shared_ptr<Chunk> chunk) override;
 
 private:
   CDFEParams params_;
 
-  std::vector<SubblockSpan> SplitIntoSubblocks(const uint8_t *buf,
-                                               int chunk_len) const;
+    // 统计信息
+  mutable size_t total_chunks_ = 0;
+  mutable size_t total_subblocks_ = 0;
+  mutable size_t boundary_cut_subblocks_ = 0;
+  mutable size_t forced_cut_subblocks_ = 0;
+
+
+  std::vector<SubblockSpan> SplitIntoSubblocks(const uint8_t *buf,int chunk_len) const;
 
   std::array<uint64_t, 2> ExtractLocalRobustFeatures(const uint8_t *sbuf,
                                                      int slen) const;

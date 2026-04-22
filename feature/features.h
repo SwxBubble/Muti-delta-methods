@@ -46,6 +46,7 @@ using Feature = std::variant<std::vector<std::vector<uint64_t>>,
 
 class FeatureCalculator {
 public:
+  virtual ~FeatureCalculator() = default;
   virtual Feature operator()(std::shared_ptr<Chunk> chunk) = 0;
 };
 
