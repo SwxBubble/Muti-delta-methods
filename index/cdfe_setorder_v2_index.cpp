@@ -63,6 +63,7 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
   const auto &features = std::get<CDFESetOrderFeature>(feat);
 
   std::unordered_map<chunk_id, CandidateStat> stats;
+
   for (const auto &qf : features) {
     auto it = inverted_.find(qf.value);
     if (it == inverted_.end()) {
@@ -70,15 +71,24 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
     }
 
     const auto &plist = it->second;
+
+    // 关键修改 1：查询时直接跳过热特征
+    if (plist.size() > hot_posting_limit_) {
+      continue;
+    }
+
     for (const auto &posting : plist) {
       auto &stat = stats[posting.id];
-      stat.overlap_hits += 1;
 
+      // 关键修改 2：按 query subblock 去重计票
+      stat.matched_query_subblocks.insert(qf.subblock_rank);
+
+      // 关键修改 3：位置接近时，再记 aligned 的 query subblock
       if (std::fabs(qf.norm_pos - posting.norm_pos) <= pos_tolerance_) {
-        stat.aligned_hits += 1;
+        stat.aligned_query_subblocks.insert(qf.subblock_rank);
       }
 
-      // 避免 matched_ranks 太大
+      // 顺序一致性仍然需要记录 rank 对
       if (stat.matched_ranks.size() < 64) {
         stat.matched_ranks.emplace_back(qf.subblock_rank,
                                         posting.subblock_rank);
@@ -94,16 +104,26 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
   scored.reserve(stats.size());
 
   for (auto &[cid, stat] : stats) {
-    if (stat.overlap_hits < min_overlap_hits_) {
+    const int matched_subblocks =
+        static_cast<int>(stat.matched_query_subblocks.size());
+    const int aligned_subblocks =
+        static_cast<int>(stat.aligned_query_subblocks.size());
+
+    // 关键修改 4：硬过滤，不再只看 raw overlap
+    if (matched_subblocks < min_matched_subblocks_) {
+      continue;
+    }
+    if (aligned_subblocks < min_aligned_subblocks_) {
       continue;
     }
 
     const float order_consistency =
         ComputeOrderConsistency(stat.matched_ranks);
 
+    // 关键修改 5：score 改成按 query subblock 计票
     const float score =
-        static_cast<float>(stat.overlap_hits) +
-        static_cast<float>(stat.aligned_hits) +
+        3.0f * static_cast<float>(matched_subblocks) +
+        5.0f * static_cast<float>(aligned_subblocks) +
         order_lambda_ * order_consistency;
 
     scored.push_back({cid, score});
@@ -118,9 +138,11 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
   std::vector<chunk_id> result;
   const size_t limit = std::min(topk, scored.size());
   result.reserve(limit);
+
   for (size_t i = 0; i < limit; ++i) {
     result.push_back(scored[i].id);
   }
+
   return result;
 }
 

@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include <unordered_set>
+
 namespace Delta {
 
 struct CDFEPosting {
@@ -16,23 +18,30 @@ struct CDFEPosting {
 };
 
 struct CandidateStat {
-  uint16_t overlap_hits = 0;
-  uint16_t aligned_hits = 0;
+  // 命中了多少个不同的 query subblock
+  std::unordered_set<uint16_t> matched_query_subblocks;
+
+  // 命中了多少个位置也对得上的 query subblock
+  std::unordered_set<uint16_t> aligned_query_subblocks;
+
+  // 用于后续计算顺序一致性
   std::vector<std::pair<uint16_t, uint16_t>> matched_ranks;
 };
 
 class CDFESetOrderV2Index : public Index {
 public:
-  CDFESetOrderV2Index(size_t topk_candidates = 4,
-                      int min_overlap_hits = 3,
-                      float pos_tolerance = 0.15f,
-                      size_t hot_posting_limit = 256,
-                      float order_lambda = 2.0f)
-      : topk_candidates_(topk_candidates),
-        min_overlap_hits_(min_overlap_hits),
-        pos_tolerance_(pos_tolerance),
-        hot_posting_limit_(hot_posting_limit),
-        order_lambda_(order_lambda) {}
+CDFESetOrderV2Index(size_t topk_candidates = 4,
+                    int min_matched_subblocks = 4,
+                    int min_aligned_subblocks = 2,
+                    float pos_tolerance = 0.15f,
+                    size_t hot_posting_limit = 256,
+                    float order_lambda = 2.0f)
+    : topk_candidates_(topk_candidates),
+      min_matched_subblocks_(min_matched_subblocks),
+      min_aligned_subblocks_(min_aligned_subblocks),
+      pos_tolerance_(pos_tolerance),
+      hot_posting_limit_(hot_posting_limit),
+      order_lambda_(order_lambda) {}
 
   std::optional<chunk_id> GetBaseChunkID(const Feature &feat) override;
   std::vector<chunk_id> GetBaseChunkCandidates(const Feature &feat,
@@ -46,7 +55,8 @@ private:
   std::unordered_map<uint64_t, std::vector<CDFEPosting>> inverted_;
 
   size_t topk_candidates_;
-  int min_overlap_hits_;
+  int min_matched_subblocks_;
+  int min_aligned_subblocks_;
   float pos_tolerance_;
   size_t hot_posting_limit_;
   float order_lambda_;

@@ -229,8 +229,10 @@ DeltaCompression::DeltaCompression() {
   size_t topk_candidates =
       static_cast<size_t>(
           feature->get_as<int64_t>("topk_candidates").value_or(4));
-  int min_overlap_hits =
-      feature->get_as<int64_t>("min_overlap_hits").value_or(3);
+  int min_matched_subblocks =
+      feature->get_as<int64_t>("min_matched_subblocks").value_or(4);
+  int min_aligned_subblocks =
+      feature->get_as<int64_t>("min_aligned_subblocks").value_or(2);
   float pos_tolerance =
       static_cast<float>(
           feature->get_as<double>("pos_tolerance").value_or(0.15));
@@ -244,7 +246,8 @@ DeltaCompression::DeltaCompression() {
   this->feature_ = std::make_unique<CDFESetOrderV2Feature>(params);
   this->index_ = std::make_unique<CDFESetOrderV2Index>(
       topk_candidates,
-      min_overlap_hits,
+      min_matched_subblocks,
+      min_aligned_subblocks,
       pos_tolerance,
       hot_posting_limit,
       order_lambda);
