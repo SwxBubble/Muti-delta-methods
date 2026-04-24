@@ -251,19 +251,6 @@ CDFESetOrderV2Feature::BuildFeatureSet(const uint8_t *buf,
     const uint8_t *sbuf = buf + sb.start;
     const int slen = sb.len;
 
-    // auto local = ExtractLocalRobustFeatures(sbuf, slen);
-    // const float norm_pos =
-    //     static_cast<float>(sb.start + sb.len * 0.5f) /
-    //     static_cast<float>(chunk_len);
-
-    // feats.push_back(
-    //     CDFELocalFeature{local[0],
-    //                      static_cast<uint16_t>(sb.rank),
-    //                      norm_pos});
-    // feats.push_back(
-    //     CDFELocalFeature{local[1],
-    //                      static_cast<uint16_t>(sb.rank),
-    //                      norm_pos});
     auto local = ExtractLocalRobustFeatures(sbuf, slen);
     const float norm_pos =
         static_cast<float>(sb.start + sb.len * 0.5f) /

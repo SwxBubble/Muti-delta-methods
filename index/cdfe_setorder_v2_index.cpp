@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <iostream>
+
 namespace Delta {
 
 void CDFESetOrderV2Index::AddFeature(const Feature &feat, chunk_id id) {
@@ -60,6 +62,13 @@ float CDFESetOrderV2Index::ComputeOrderConsistency(
 std::vector<chunk_id>
 CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
                                             size_t topk) {
+  static size_t debug_enter_count = 0;
+  if (debug_enter_count < 20) {
+    std::cerr << "[CDFE debug enter] GetBaseChunkCandidates called, count="
+              << debug_enter_count << ", topk=" << topk << std::endl;
+  }
+  debug_enter_count++;                                            
+
   const auto &features = std::get<CDFESetOrderFeature>(feat);
 
   std::unordered_map<chunk_id, CandidateStat> stats;
@@ -96,10 +105,19 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
     }
   }
 
+  // struct ScoredCandidate {
+  //   chunk_id id;
+  //   float score;
+  // };
+
   struct ScoredCandidate {
-    chunk_id id;
-    float score;
+  chunk_id id;
+  int matched_subblocks;
+  int aligned_subblocks;
+  float order_consistency;
+  float score;
   };
+
   std::vector<ScoredCandidate> scored;
   scored.reserve(stats.size());
 
@@ -121,12 +139,23 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
         ComputeOrderConsistency(stat.matched_ranks);
 
     // 关键修改 5：score 改成按 query subblock 计票
-    const float score =
-        3.0f * static_cast<float>(matched_subblocks) +
-        5.0f * static_cast<float>(aligned_subblocks) +
-        order_lambda_ * order_consistency;
+    
+        // 5.0f * static_cast<float>(matched_subblocks) +
+        // 3.0f * static_cast<float>(aligned_subblocks) +
+        // order_lambda_ * order_consistency;
 
-    scored.push_back({cid, score});
+    // scored.push_back({cid, score});
+
+    const float score = static_cast<float>(matched_subblocks);
+
+      scored.push_back({
+          cid,
+          matched_subblocks,
+          aligned_subblocks,
+          order_consistency,
+          score
+      });
+
   }
 
   std::sort(scored.begin(), scored.end(),
@@ -135,15 +164,49 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
               return a.id < b.id;
             });
 
+  // std::vector<chunk_id> result;
+  // const size_t limit = std::min(topk, scored.size());
+  // result.reserve(limit);
+
+  // for (size_t i = 0; i < limit; ++i) {
+  //   result.push_back(scored[i].id);
+  // }
+
+  // return result;
+
   std::vector<chunk_id> result;
   const size_t limit = std::min(topk, scored.size());
   result.reserve(limit);
+
+  // 只打印前 100 个 query，避免日志爆炸
+  static size_t debug_query_count = 0;
+  if (debug_query_count < 100) {
+    std::cerr << "[CDFE topk debug] query=" << debug_query_count
+              << " filtered_candidates=" << scored.size()
+              << " topk=" << limit
+              << " | ";
+
+    for (size_t i = 0; i < limit; ++i) {
+      std::cerr << "rank" << i
+                << "(id=" << scored[i].id
+                << ", matched=" << scored[i].matched_subblocks
+                << ", aligned=" << scored[i].aligned_subblocks
+                << ", order=" << scored[i].order_consistency
+                << ", score=" << scored[i].score
+                << ") ";
+    }
+
+    std::cerr << std::endl;
+  }
+  debug_query_count++;
 
   for (size_t i = 0; i < limit; ++i) {
     result.push_back(scored[i].id);
   }
 
   return result;
+
+
 }
 
 std::optional<chunk_id>
