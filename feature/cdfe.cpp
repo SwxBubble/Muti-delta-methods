@@ -81,59 +81,6 @@ CDFESetOrderV2Feature::~CDFESetOrderV2Feature() {
 }
 
 
-// std::vector<SubblockSpan>
-// CDFESetOrderV2Feature::SplitIntoSubblocks(const uint8_t *buf,
-//                                           int chunk_len) const {
-//   std::vector<SubblockSpan> res;
-//   if (chunk_len <= 0) {
-//     return res;
-//   }
-
-//   int start = 0;
-//   int rank = 0;
-
-//   while (start < chunk_len) {
-//     const int end_limit = std::min(start + params_.max_subblock_size, chunk_len);
-//     int cut = -1;
-
-//     // 从左往右扫描，找到第一个合法边界
-//     for (int end = start + 1; end <= end_limit; ++end) {
-//       const int cur_len = end - start;
-
-//       if (cur_len < params_.min_subblock_size) {
-//         continue;
-//       }
-
-//       // 只有当前子块内至少有一个完整 split window 时才检查边界
-//       if (cur_len < params_.split_window_size) {
-//         continue;
-//       }
-
-//       const int window_start = end - params_.split_window_size;
-//       const uint64_t fp =
-//           HashWindow(buf + window_start, params_.split_window_size);
-
-//       if (params_.boundary_divisor > 0 &&
-//           (fp % params_.boundary_divisor) == 0) {
-//         cut = end;
-//         break;
-//       }
-//     }
-
-//     // 找不到合法边界则强切
-//     if (cut == -1) {
-//       cut = end_limit;
-//     }
-
-//     res.push_back({start, cut - start, rank});
-//     start = cut;
-//     rank++;
-//   }
-
-//   return res;
-// }
-
-
 
 std::vector<SubblockSpan>
 CDFESetOrderV2Feature::SplitIntoSubblocks(const uint8_t *buf,

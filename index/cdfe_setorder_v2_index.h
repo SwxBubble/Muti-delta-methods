@@ -28,6 +28,22 @@ struct CandidateStat {
   std::vector<std::pair<uint16_t, uint16_t>> matched_ranks;
 };
 
+
+struct CDFECandidateDebugInfo {
+  chunk_id id;
+
+  int query_subblocks = 0;
+  int base_subblocks = 0;
+
+  int matched_subblocks = 0;
+  int aligned_subblocks = 0;
+
+  float matched_ratio = 0.0f;
+  float aligned_ratio = 0.0f;
+  float order_consistency = 0.0f;
+  float score = 0.0f;
+};
+
 class CDFESetOrderV2Index : public Index {
 public:
 CDFESetOrderV2Index(size_t topk_candidates = 4,
@@ -51,6 +67,10 @@ CDFESetOrderV2Index(size_t topk_candidates = 4,
   bool RecoverFromFile(const std::string &path) override { return true; }
   bool DumpToFile(const std::string &path) override { return true; }
 
+  const std::vector<CDFECandidateDebugInfo> &GetLastTopKDebugInfos() const {
+  return last_topk_debug_infos_;
+  }
+
 private:
   std::unordered_map<uint64_t, std::vector<CDFEPosting>> inverted_;
 
@@ -63,6 +83,14 @@ private:
 
   float ComputeOrderConsistency(
       const std::vector<std::pair<uint16_t, uint16_t>> &matched_ranks) const;
+
+
+  std::unordered_map<chunk_id, int> chunk_subblock_count_;
+  std::vector<CDFECandidateDebugInfo> last_topk_debug_infos_;
+
+  static int CountSubblocks(const CDFESetOrderFeature &features);
 };
+
+
 
 } // namespace Delta

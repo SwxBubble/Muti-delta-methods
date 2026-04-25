@@ -2,22 +2,45 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <unordered_map>
 #include <vector>
 
-#include <iostream>
-
+//增加了 子块诊断信息的保存能力
 namespace Delta {
+
+int CDFESetOrderV2Index::CountSubblocks(
+    const CDFESetOrderFeature &features) {
+  if (features.empty()) {
+    return 0;
+  }
+
+  uint16_t max_rank = 0;
+  for (const auto &f : features) {
+    if (f.subblock_rank > max_rank) {
+      max_rank = f.subblock_rank;
+    }
+  }
+
+  return static_cast<int>(max_rank) + 1;
+}
 
 void CDFESetOrderV2Index::AddFeature(const Feature &feat, chunk_id id) {
   const auto &features = std::get<CDFESetOrderFeature>(feat);
+
+  // 记录每个进入索引的 base chunk 的子块数量。
+  // 后续 pair-level 诊断时，需要知道 candidate/base 被切成了多少子块。
+  chunk_subblock_count_[id] = CountSubblocks(features);
 
   for (const auto &f : features) {
     auto &plist = inverted_[f.value];
     plist.push_back(CDFEPosting{id, f.subblock_rank, f.norm_pos});
 
-    // 简单 posting cap：先保留最新的 hot_posting_limit_ 条
+    // 当前策略：posting list 只保留最近 hot_posting_limit_ 条。
+    // 注意：由于这里已经截断，查询阶段 plist.size() > hot_posting_limit_
+    // 通常不会触发。也就是说当前更像是 posting cap，而不是真正 stop-feature。
     if (plist.size() > hot_posting_limit_) {
       plist.erase(plist.begin(),
                   plist.begin() + (plist.size() - hot_posting_limit_));
@@ -62,42 +85,49 @@ float CDFESetOrderV2Index::ComputeOrderConsistency(
 std::vector<chunk_id>
 CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
                                             size_t topk) {
-  static size_t debug_enter_count = 0;
-  if (debug_enter_count < 20) {
-    std::cerr << "[CDFE debug enter] GetBaseChunkCandidates called, count="
-              << debug_enter_count << ", topk=" << topk << std::endl;
-  }
-  debug_enter_count++;                                            
+  last_topk_debug_infos_.clear();
 
   const auto &features = std::get<CDFESetOrderFeature>(feat);
+  const int query_subblock_count = CountSubblocks(features);
+
+  // 调试统计
+  const size_t query_feature_count = features.size();
+  size_t feature_not_found_count = 0;
+  size_t hot_feature_skipped_count = 0;
+  size_t posting_scanned_count = 0;
 
   std::unordered_map<chunk_id, CandidateStat> stats;
 
   for (const auto &qf : features) {
     auto it = inverted_.find(qf.value);
     if (it == inverted_.end()) {
+      feature_not_found_count++;
       continue;
     }
 
     const auto &plist = it->second;
 
-    // 关键修改 1：查询时直接跳过热特征
+    // 当前由于 AddFeature 中已经做了 posting cap，
+    // 这里一般不会触发，但先保留统计，方便后面改成真正 hot-feature skip。
     if (plist.size() > hot_posting_limit_) {
+      hot_feature_skipped_count++;
       continue;
     }
+
+    posting_scanned_count += plist.size();
 
     for (const auto &posting : plist) {
       auto &stat = stats[posting.id];
 
-      // 关键修改 2：按 query subblock 去重计票
+      // 按 query subblock 去重计票
       stat.matched_query_subblocks.insert(qf.subblock_rank);
 
-      // 关键修改 3：位置接近时，再记 aligned 的 query subblock
+      // 位置接近时，记录 aligned query subblock
       if (std::fabs(qf.norm_pos - posting.norm_pos) <= pos_tolerance_) {
         stat.aligned_query_subblocks.insert(qf.subblock_rank);
       }
 
-      // 顺序一致性仍然需要记录 rank 对
+      // 顺序一致性计算需要 rank 对
       if (stat.matched_ranks.size() < 64) {
         stat.matched_ranks.emplace_back(qf.subblock_rank,
                                         posting.subblock_rank);
@@ -105,17 +135,12 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
     }
   }
 
-  // struct ScoredCandidate {
-  //   chunk_id id;
-  //   float score;
-  // };
-
   struct ScoredCandidate {
-  chunk_id id;
-  int matched_subblocks;
-  int aligned_subblocks;
-  float order_consistency;
-  float score;
+    chunk_id id;
+    int matched_subblocks;
+    int aligned_subblocks;
+    float order_consistency;
+    float score;
   };
 
   std::vector<ScoredCandidate> scored;
@@ -127,10 +152,12 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
     const int aligned_subblocks =
         static_cast<int>(stat.aligned_query_subblocks.size());
 
-    // 关键修改 4：硬过滤，不再只看 raw overlap
+    // 硬过滤：至少覆盖多少个 query subblock
     if (matched_subblocks < min_matched_subblocks_) {
       continue;
     }
+
+    // 如果 min_aligned_subblocks_ = 0，则这一项相当于关闭。
     if (aligned_subblocks < min_aligned_subblocks_) {
       continue;
     }
@@ -138,24 +165,23 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
     const float order_consistency =
         ComputeOrderConsistency(stat.matched_ranks);
 
-    // 关键修改 5：score 改成按 query subblock 计票
-    
-        // 5.0f * static_cast<float>(matched_subblocks) +
-        // 3.0f * static_cast<float>(aligned_subblocks) +
-        // order_lambda_ * order_consistency;
-
-    // scored.push_back({cid, score});
-
+    // 当前默认保留你上传文件中的 matched-only 评分。
+    // 如果要使用当前实验最好的组合评分，把下面这行替换为注释中的组合 score。
     const float score = static_cast<float>(matched_subblocks);
 
-      scored.push_back({
-          cid,
-          matched_subblocks,
-          aligned_subblocks,
-          order_consistency,
-          score
-      });
+    // 组合 score 版本：
+    // const float score =
+    //     6.0f * static_cast<float>(matched_subblocks) +
+    //     3.0f * static_cast<float>(aligned_subblocks) +
+    //     4.0f * order_consistency;
 
+    scored.push_back({
+        cid,
+        matched_subblocks,
+        aligned_subblocks,
+        order_consistency,
+        score
+    });
   }
 
   std::sort(scored.begin(), scored.end(),
@@ -164,49 +190,96 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
               return a.id < b.id;
             });
 
-  // std::vector<chunk_id> result;
-  // const size_t limit = std::min(topk, scored.size());
-  // result.reserve(limit);
-
-  // for (size_t i = 0; i < limit; ++i) {
-  //   result.push_back(scored[i].id);
-  // }
-
-  // return result;
-
   std::vector<chunk_id> result;
   const size_t limit = std::min(topk, scored.size());
   result.reserve(limit);
 
-  // 只打印前 100 个 query，避免日志爆炸
+  // 保存本次 top-k 的子块诊断信息，供 delta_compression.cpp 读取。
+  last_topk_debug_infos_.clear();
+  last_topk_debug_infos_.reserve(limit);
+
+  for (size_t i = 0; i < limit; ++i) {
+    const auto &cand = scored[i];
+
+    int base_subblock_count = 0;
+    auto cnt_it = chunk_subblock_count_.find(cand.id);
+    if (cnt_it != chunk_subblock_count_.end()) {
+      base_subblock_count = cnt_it->second;
+    }
+
+    CDFECandidateDebugInfo info;
+    info.id = cand.id;
+    info.query_subblocks = query_subblock_count;
+    info.base_subblocks = base_subblock_count;
+    info.matched_subblocks = cand.matched_subblocks;
+    info.aligned_subblocks = cand.aligned_subblocks;
+    info.order_consistency = cand.order_consistency;
+    info.score = cand.score;
+
+    if (query_subblock_count > 0) {
+      info.matched_ratio =
+          static_cast<float>(cand.matched_subblocks) /
+          static_cast<float>(query_subblock_count);
+    }
+
+    if (cand.matched_subblocks > 0) {
+      info.aligned_ratio =
+          static_cast<float>(cand.aligned_subblocks) /
+          static_cast<float>(cand.matched_subblocks);
+    }
+
+    last_topk_debug_infos_.push_back(info);
+    result.push_back(cand.id);
+  }
+
+  // 继续保留原来的 top-k 调试日志。
+  // 这个日志只输出 topk > 0 的 query。
   static size_t debug_query_count = 0;
-  if (debug_query_count < 100) {
-    std::cerr << "[CDFE topk debug] query=" << debug_query_count
+  static std::ofstream debug_log("cdfe_topk_debug.log", std::ios::out);
+
+  const size_t debug_query_id = debug_query_count++;
+
+  static bool debug_log_notice = false;
+  if (!debug_log_notice) {
+    std::cerr << "[CDFE debug] writing topk debug log to "
+              << "cdfe_topk_debug.log" << std::endl;
+    debug_log_notice = true;
+  }
+
+  if (limit > 0 && debug_log.is_open()) {
+    debug_log << "[CDFE topk debug]"
+              << " query=" << debug_query_id
+              << " query_features=" << query_feature_count
+              << " query_subblocks=" << query_subblock_count
+              << " feature_not_found=" << feature_not_found_count
+              << " hot_feature_skipped=" << hot_feature_skipped_count
+              << " posting_scanned=" << posting_scanned_count
+              << " raw_candidates=" << stats.size()
               << " filtered_candidates=" << scored.size()
               << " topk=" << limit
               << " | ";
 
     for (size_t i = 0; i < limit; ++i) {
-      std::cerr << "rank" << i
-                << "(id=" << scored[i].id
-                << ", matched=" << scored[i].matched_subblocks
-                << ", aligned=" << scored[i].aligned_subblocks
-                << ", order=" << scored[i].order_consistency
-                << ", score=" << scored[i].score
+      const auto &info = last_topk_debug_infos_[i];
+
+      debug_log << "rank" << i
+                << "(id=" << info.id
+                << ", q_subblocks=" << info.query_subblocks
+                << ", b_subblocks=" << info.base_subblocks
+                << ", matched=" << info.matched_subblocks
+                << ", aligned=" << info.aligned_subblocks
+                << ", matched_ratio=" << info.matched_ratio
+                << ", aligned_ratio=" << info.aligned_ratio
+                << ", order=" << info.order_consistency
+                << ", score=" << info.score
                 << ") ";
     }
 
-    std::cerr << std::endl;
-  }
-  debug_query_count++;
-
-  for (size_t i = 0; i < limit; ++i) {
-    result.push_back(scored[i].id);
+    debug_log << std::endl;
+    debug_log.flush();
   }
 
   return result;
-
-
 }
 
 std::optional<chunk_id>
@@ -219,3 +292,5 @@ CDFESetOrderV2Index::GetBaseChunkID(const Feature &feat) {
 }
 
 } // namespace Delta
+
+

@@ -27,6 +27,9 @@
 //cdfe-v2
 #include "feature/cdfe.h"
 #include "index/cdfe_setorder_v2_index.h"
+
+//
+#include <fstream>
 namespace Delta {
 void DeltaCompression::AddFile(const std::string &file_name) {
   FileMeta file_meta;
@@ -87,38 +90,268 @@ void DeltaCompression::AddFile(const std::string &file_name) {
         static_cast<size_t>(
             feature_cfg->get_as<int64_t>("topk_candidates").value_or(1));
 
-    auto candidate_ids = index_->GetBaseChunkCandidates(feature, topk_candidates);
+    // auto candidate_ids = index_->GetBaseChunkCandidates(feature, topk_candidates);
 
-    if (candidate_ids.empty()) {
-      index_->AddFeature(feature, chunk->id());
-      write_base_chunk(chunk);
-      continue;
+    // if (candidate_ids.empty()) {
+    //   index_->AddFeature(feature, chunk->id());
+    //   write_base_chunk(chunk);
+    //   continue;
+    // }
+
+    // // 对 top-k 候选逐个做真实 delta 编码，选最优 base
+    // std::shared_ptr<Chunk> best_delta_chunk = nullptr;
+    // chunk_id best_base_id = 0;
+    // size_t best_delta_size = std::numeric_limits<size_t>::max();
+
+    // for (auto cid : candidate_ids) {
+    //   auto delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
+    //   if (delta_chunk &&
+    //       static_cast<size_t>(delta_chunk->len()) < best_delta_size) {
+    //     best_delta_size = static_cast<size_t>(delta_chunk->len());
+    //     best_delta_chunk = delta_chunk;
+    //     best_base_id = cid;
+    //   }
+    // }
+
+    // // 如果最优 delta 仍然不划算，则退回写 base chunk
+    // if (!best_delta_chunk ||
+    //     best_delta_size >= static_cast<size_t>(chunk->len())) {
+    //   index_->AddFeature(feature, chunk->id());
+    //   write_base_chunk(chunk);
+    //   continue;
+    // }
+
+    // write_delta_chunk(chunk, best_delta_chunk, best_base_id);
+    // 为了和 cdfe_topk_debug.log 对齐，
+// 为了和 cdfe_topk_debug.log 对齐，
+// 这里每调用一次 GetBaseChunkCandidates，就递增一次 query id。
+static size_t cdfe_debug_query_count = 0;
+const size_t cdfe_debug_query_id = cdfe_debug_query_count++;
+
+auto candidate_ids = index_->GetBaseChunkCandidates(feature, topk_candidates);
+
+// 从 CDFESetOrderV2Index 中取出本次 top-k 的子块诊断信息。
+// 这些信息由 index/cdfe_setorder_v2_index.cpp 中的
+// last_topk_debug_infos_ 保存。
+std::vector<CDFECandidateDebugInfo> topk_debug_infos;
+if (auto *cdfe_index =
+        dynamic_cast<CDFESetOrderV2Index *>(index_.get())) {
+  topk_debug_infos = cdfe_index->GetLastTopKDebugInfos();
+}
+
+if (candidate_ids.empty()) {
+  index_->AddFeature(feature, chunk->id());
+  write_base_chunk(chunk);
+  continue;
+}
+
+// 对 top-k 候选逐个做真实 delta 编码，选最优 base
+std::shared_ptr<Chunk> best_delta_chunk = nullptr;
+chunk_id best_base_id = 0;
+size_t best_delta_size = std::numeric_limits<size_t>::max();
+int best_rank = -1;
+
+struct CandidateDeltaDebug {
+  size_t rank;
+  chunk_id id;
+  size_t delta_size;
+  bool valid;
+
+  int query_subblocks = 0;
+  int base_subblocks = 0;
+  int matched_subblocks = 0;
+  int aligned_subblocks = 0;
+
+  float matched_ratio = 0.0f;
+  float aligned_ratio = 0.0f;
+  float order_consistency = 0.0f;
+  float score = 0.0f;
+};
+
+std::vector<CandidateDeltaDebug> delta_debug_records;
+delta_debug_records.reserve(candidate_ids.size());
+
+for (size_t rank = 0; rank < candidate_ids.size(); ++rank) {
+  auto cid = candidate_ids[rank];
+  auto delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
+
+  CandidateDeltaDebug rec;
+  rec.rank = rank;
+  rec.id = cid;
+  rec.delta_size = 0;
+  rec.valid = false;
+
+  // 将 index 层保存的子块诊断信息合并进来。
+  // 正常情况下 topk_debug_infos[rank].id 应该和 candidate_ids[rank] 一致。
+  if (rank < topk_debug_infos.size() &&
+      topk_debug_infos[rank].id == cid) {
+    const auto &info = topk_debug_infos[rank];
+
+    rec.query_subblocks = info.query_subblocks;
+    rec.base_subblocks = info.base_subblocks;
+    rec.matched_subblocks = info.matched_subblocks;
+    rec.aligned_subblocks = info.aligned_subblocks;
+    rec.matched_ratio = info.matched_ratio;
+    rec.aligned_ratio = info.aligned_ratio;
+    rec.order_consistency = info.order_consistency;
+    rec.score = info.score;
+  }
+
+  if (delta_chunk) {
+    const size_t cur_delta_size =
+        static_cast<size_t>(delta_chunk->len());
+
+    rec.delta_size = cur_delta_size;
+    rec.valid = true;
+
+    if (cur_delta_size < best_delta_size) {
+      best_delta_size = cur_delta_size;
+      best_delta_chunk = delta_chunk;
+      best_base_id = cid;
+      best_rank = static_cast<int>(rank);
+    }
+  }
+
+  delta_debug_records.push_back(rec);
+}
+
+// 旧日志：只记录 top-k 的真实 delta size。
+// 这个日志可以继续保留，用于和之前结果对比。
+static std::ofstream cdfe_delta_debug_log(
+    "cdfe_topk_delta_debug.log", std::ios::out);
+
+static bool cdfe_delta_debug_notice = false;
+if (!cdfe_delta_debug_notice) {
+  std::cerr << "[CDFE debug] writing topk delta debug log to "
+            << "cdfe_topk_delta_debug.log" << std::endl;
+  cdfe_delta_debug_notice = true;
+}
+
+if (cdfe_delta_debug_log.is_open()) {
+  cdfe_delta_debug_log
+      << "[CDFE delta debug]"
+      << " query=" << cdfe_debug_query_id
+      << " chunk_id=" << chunk->id()
+      << " chunk_len=" << chunk->len()
+      << " candidate_count=" << candidate_ids.size()
+      << " best_rank=" << best_rank
+      << " best_base=" << best_base_id
+      << " best_delta_size=" << best_delta_size
+      << " fallback_to_base="
+      << ((!best_delta_chunk ||
+           best_delta_size >= static_cast<size_t>(chunk->len()))
+              ? 1
+              : 0)
+      << " | ";
+
+  for (const auto &rec : delta_debug_records) {
+    cdfe_delta_debug_log
+        << "rank" << rec.rank
+        << "(id=" << rec.id;
+
+    if (rec.valid) {
+      cdfe_delta_debug_log
+          << ", delta_size=" << rec.delta_size;
+    } else {
+      cdfe_delta_debug_log
+          << ", delta_size=INVALID";
     }
 
-    // 对 top-k 候选逐个做真实 delta 编码，选最优 base
-    std::shared_ptr<Chunk> best_delta_chunk = nullptr;
-    chunk_id best_base_id = 0;
-    size_t best_delta_size = std::numeric_limits<size_t>::max();
+    cdfe_delta_debug_log << ") ";
+  }
 
-    for (auto cid : candidate_ids) {
-      auto delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
-      if (delta_chunk &&
-          static_cast<size_t>(delta_chunk->len()) < best_delta_size) {
-        best_delta_size = static_cast<size_t>(delta_chunk->len());
-        best_delta_chunk = delta_chunk;
-        best_base_id = cid;
+  cdfe_delta_debug_log << std::endl;
+  cdfe_delta_debug_log.flush();
+}
+
+// 新日志：pair-level 子块划分诊断。
+// 用这个日志判断子块划分是否稳定。
+static std::ofstream cdfe_pair_debug_log(
+    "cdfe_pair_partition_debug.log", std::ios::out);
+
+static bool cdfe_pair_debug_notice = false;
+if (!cdfe_pair_debug_notice) {
+  std::cerr << "[CDFE debug] writing pair partition debug log to "
+            << "cdfe_pair_partition_debug.log" << std::endl;
+  cdfe_pair_debug_notice = true;
+}
+
+if (cdfe_pair_debug_log.is_open()) {
+  cdfe_pair_debug_log
+      << "[CDFE pair partition]"
+      << " query=" << cdfe_debug_query_id
+      << " chunk_id=" << chunk->id()
+      << " chunk_len=" << chunk->len()
+      << " candidate_count=" << candidate_ids.size()
+      << " best_rank=" << best_rank
+      << " best_base=" << best_base_id
+      << " best_delta_size=" << best_delta_size
+      << " best_delta_ratio=";
+
+  if (chunk->len() > 0 &&
+      best_delta_size != std::numeric_limits<size_t>::max()) {
+    cdfe_pair_debug_log
+        << static_cast<double>(best_delta_size) /
+               static_cast<double>(chunk->len());
+  } else {
+    cdfe_pair_debug_log << "NA";
+  }
+
+  cdfe_pair_debug_log
+      << " fallback_to_base="
+      << ((!best_delta_chunk ||
+           best_delta_size >= static_cast<size_t>(chunk->len()))
+              ? 1
+              : 0)
+      << " | ";
+
+  for (const auto &rec : delta_debug_records) {
+    cdfe_pair_debug_log
+        << "rank" << rec.rank
+        << "(id=" << rec.id
+        << ", q_subblocks=" << rec.query_subblocks
+        << ", b_subblocks=" << rec.base_subblocks
+        << ", matched=" << rec.matched_subblocks
+        << ", aligned=" << rec.aligned_subblocks
+        << ", matched_ratio=" << rec.matched_ratio
+        << ", aligned_ratio=" << rec.aligned_ratio
+        << ", order=" << rec.order_consistency
+        << ", score=" << rec.score;
+
+    if (rec.valid) {
+      cdfe_pair_debug_log
+          << ", delta_size=" << rec.delta_size;
+
+      if (chunk->len() > 0) {
+        cdfe_pair_debug_log
+            << ", delta_ratio="
+            << static_cast<double>(rec.delta_size) /
+                   static_cast<double>(chunk->len());
+      } else {
+        cdfe_pair_debug_log << ", delta_ratio=NA";
       }
+    } else {
+      cdfe_pair_debug_log
+          << ", delta_size=INVALID"
+          << ", delta_ratio=NA";
     }
 
-    // 如果最优 delta 仍然不划算，则退回写 base chunk
-    if (!best_delta_chunk ||
-        best_delta_size >= static_cast<size_t>(chunk->len())) {
-      index_->AddFeature(feature, chunk->id());
-      write_base_chunk(chunk);
-      continue;
-    }
+    cdfe_pair_debug_log << ") ";
+  }
 
-    write_delta_chunk(chunk, best_delta_chunk, best_base_id);
+  cdfe_pair_debug_log << std::endl;
+  cdfe_pair_debug_log.flush();
+}
+
+// 如果最优 delta 仍然不划算，则退回写 base chunk
+if (!best_delta_chunk ||
+    best_delta_size >= static_cast<size_t>(chunk->len())) {
+  index_->AddFeature(feature, chunk->id());
+  write_base_chunk(chunk);
+  continue;
+}
+
+write_delta_chunk(chunk, best_delta_chunk, best_base_id);
 
     //**************** */
     file_meta.end_chunk_id = chunk->id();
