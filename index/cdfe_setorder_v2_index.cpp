@@ -27,20 +27,44 @@ int CDFESetOrderV2Index::CountSubblocks(
   return static_cast<int>(max_rank) + 1;
 }
 
+// void CDFESetOrderV2Index::AddFeature(const Feature &feat, chunk_id id) {
+//   const auto &features = std::get<CDFESetOrderFeature>(feat);
+
+//   // 记录每个进入索引的 base chunk 的子块数量。
+//   // 后续 pair-level 诊断时，需要知道 candidate/base 被切成了多少子块。
+//   chunk_subblock_count_[id] = CountSubblocks(features);
+
+//   for (const auto &f : features) {
+//     auto &plist = inverted_[f.value];
+//     plist.push_back(CDFEPosting{id, f.subblock_rank, f.norm_pos});
+
+//     // 当前策略：posting list 只保留最近 hot_posting_limit_ 条。
+//     // 注意：由于这里已经截断，查询阶段 plist.size() > hot_posting_limit_
+//     // 通常不会触发。也就是说当前更像是 posting cap，而不是真正 stop-feature。
+//     if (plist.size() > hot_posting_limit_) {
+//       plist.erase(plist.begin(),
+//                   plist.begin() + (plist.size() - hot_posting_limit_));
+//     }
+//   }
+// }
 void CDFESetOrderV2Index::AddFeature(const Feature &feat, chunk_id id) {
   const auto &features = std::get<CDFESetOrderFeature>(feat);
 
   // 记录每个进入索引的 base chunk 的子块数量。
-  // 后续 pair-level 诊断时，需要知道 candidate/base 被切成了多少子块。
   chunk_subblock_count_[id] = CountSubblocks(features);
 
   for (const auto &f : features) {
+    // 关键修改：记录该 feature 历史总出现次数。
+    // 这个值不会因为 posting list 截断而下降。
+    auto &total_count = feature_total_count_[f.value];
+    total_count++;
+
     auto &plist = inverted_[f.value];
     plist.push_back(CDFEPosting{id, f.subblock_rank, f.norm_pos});
 
-    // 当前策略：posting list 只保留最近 hot_posting_limit_ 条。
-    // 注意：由于这里已经截断，查询阶段 plist.size() > hot_posting_limit_
-    // 通常不会触发。也就是说当前更像是 posting cap，而不是真正 stop-feature。
+    // 仍然保留 posting cap，用于控制内存和扫描开销。
+    // 但是否为 hot feature，不再看 plist.size()，
+    // 而是看 feature_total_count_[f.value]。
     if (plist.size() > hot_posting_limit_) {
       plist.erase(plist.begin(),
                   plist.begin() + (plist.size() - hot_posting_limit_));
@@ -93,6 +117,7 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
   // 调试统计
   const size_t query_feature_count = features.size();
   size_t feature_not_found_count = 0;
+  size_t feature_hit_count = 0;
   size_t hot_feature_skipped_count = 0;
   size_t posting_scanned_count = 0;
 
@@ -105,11 +130,30 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
       continue;
     }
 
+    // const auto &plist = it->second;
+
+    // // 当前由于 AddFeature 中已经做了 posting cap，
+    // // 这里一般不会触发，但先保留统计，方便后面改成真正 hot-feature skip。
+    // if (plist.size() > hot_posting_limit_) {
+    //   hot_feature_skipped_count++;
+    //   continue;
+    // }
+
+    // posting_scanned_count += plist.size();
+    feature_hit_count++;
+
     const auto &plist = it->second;
 
-    // 当前由于 AddFeature 中已经做了 posting cap，
-    // 这里一般不会触发，但先保留统计，方便后面改成真正 hot-feature skip。
-    if (plist.size() > hot_posting_limit_) {
+    // 真正的 hot feature skip：
+    // 不再根据当前 posting list 长度判断，
+    // 而是根据这个 feature 的历史总出现次数判断。
+    size_t total_count = plist.size();
+    auto cnt_it = feature_total_count_.find(qf.value);
+    if (cnt_it != feature_total_count_.end()) {
+      total_count = cnt_it->second;
+    }
+
+    if (total_count > hot_posting_limit_) {
       hot_feature_skipped_count++;
       continue;
     }
@@ -300,6 +344,8 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
               return a.id < b.id;
             });
 
+
+
   std::vector<chunk_id> result;
   const size_t limit = std::min(topk, scored.size());
   result.reserve(limit);
@@ -379,6 +425,7 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
               << " query_features=" << query_feature_count
               << " query_subblocks=" << query_subblock_count
               << " feature_not_found=" << feature_not_found_count
+              << " feature_hit=" << feature_hit_count
               << " hot_feature_skipped=" << hot_feature_skipped_count
               << " posting_scanned=" << posting_scanned_count
               << " raw_candidates=" << stats.size()

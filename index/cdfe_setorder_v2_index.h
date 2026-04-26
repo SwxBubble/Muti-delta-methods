@@ -94,6 +94,7 @@ CDFESetOrderV2Index(size_t topk_candidates = 4,
 
 private:
   std::unordered_map<uint64_t, std::vector<CDFEPosting>> inverted_;
+  std::unordered_map<uint64_t, size_t> feature_total_count_;
 
   size_t topk_candidates_;
   int min_matched_subblocks_;
