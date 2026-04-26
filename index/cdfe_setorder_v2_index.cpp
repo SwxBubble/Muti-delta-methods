@@ -122,6 +122,9 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
       // 按 query subblock 去重计票
       stat.matched_query_subblocks.insert(qf.subblock_rank);
 
+      // base/candidate 侧命中
+      stat.matched_base_subblocks.insert(posting.subblock_rank);
+
       // 位置接近时，记录 aligned query subblock
       if (std::fabs(qf.norm_pos - posting.norm_pos) <= pos_tolerance_) {
         stat.aligned_query_subblocks.insert(qf.subblock_rank);
@@ -135,54 +138,161 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
     }
   }
 
+  // struct ScoredCandidate {
+  //   chunk_id id;
+  //   int matched_subblocks;
+  //   int aligned_subblocks;
+  //   float order_consistency;
+  //   float score;
+  // };
+
   struct ScoredCandidate {
-    chunk_id id;
-    int matched_subblocks;
-    int aligned_subblocks;
-    float order_consistency;
-    float score;
-  };
+  chunk_id id;
+
+  int matched_query_subblocks;
+  int matched_base_subblocks;
+  int aligned_subblocks;
+
+  int query_subblock_count;
+  int base_subblock_count;
+
+  float query_matched_ratio;
+  float base_matched_ratio;
+  float aligned_ratio;
+  float jaccard_proxy;
+
+  float order_consistency;
+  float score;
+};
 
   std::vector<ScoredCandidate> scored;
   scored.reserve(stats.size());
 
+  // for (auto &[cid, stat] : stats) {
+  //   const int matched_subblocks =
+  //       static_cast<int>(stat.matched_query_subblocks.size());
+  //   const int aligned_subblocks =
+  //       static_cast<int>(stat.aligned_query_subblocks.size());
+
+  //   // 硬过滤：至少覆盖多少个 query subblock
+  //   if (matched_subblocks < min_matched_subblocks_) {
+  //     continue;
+  //   }
+
+  //   // 如果 min_aligned_subblocks_ = 0，则这一项相当于关闭。
+  //   if (aligned_subblocks < min_aligned_subblocks_) {
+  //     continue;
+  //   }
+
+  //   const float order_consistency =
+  //       ComputeOrderConsistency(stat.matched_ranks);
+
+  //   // 当前默认保留你上传文件中的 matched-only 评分。
+  //   // 如果要使用当前实验最好的组合评分，把下面这行替换为注释中的组合 score。
+  //   const float score = static_cast<float>(matched_subblocks);
+
+  //   // 组合 score 版本：
+  //   // const float score =
+  //   //     6.0f * static_cast<float>(matched_subblocks) +
+  //   //     3.0f * static_cast<float>(aligned_subblocks) +
+  //   //     4.0f * order_consistency;
+
+  //   scored.push_back({
+  //       cid,
+  //       matched_subblocks,
+  //       aligned_subblocks,
+  //       order_consistency,
+  //       score
+  //   });
+  // }
+
   for (auto &[cid, stat] : stats) {
-    const int matched_subblocks =
-        static_cast<int>(stat.matched_query_subblocks.size());
-    const int aligned_subblocks =
-        static_cast<int>(stat.aligned_query_subblocks.size());
+  const int matched_query_subblocks =
+      static_cast<int>(stat.matched_query_subblocks.size());
+  const int matched_base_subblocks =
+      static_cast<int>(stat.matched_base_subblocks.size());
+  const int aligned_subblocks =
+      static_cast<int>(stat.aligned_query_subblocks.size());
 
-    // 硬过滤：至少覆盖多少个 query subblock
-    if (matched_subblocks < min_matched_subblocks_) {
-      continue;
-    }
-
-    // 如果 min_aligned_subblocks_ = 0，则这一项相当于关闭。
-    if (aligned_subblocks < min_aligned_subblocks_) {
-      continue;
-    }
-
-    const float order_consistency =
-        ComputeOrderConsistency(stat.matched_ranks);
-
-    // 当前默认保留你上传文件中的 matched-only 评分。
-    // 如果要使用当前实验最好的组合评分，把下面这行替换为注释中的组合 score。
-    const float score = static_cast<float>(matched_subblocks);
-
-    // 组合 score 版本：
-    // const float score =
-    //     6.0f * static_cast<float>(matched_subblocks) +
-    //     3.0f * static_cast<float>(aligned_subblocks) +
-    //     4.0f * order_consistency;
-
-    scored.push_back({
-        cid,
-        matched_subblocks,
-        aligned_subblocks,
-        order_consistency,
-        score
-    });
+  int base_subblock_count = 0;
+  auto cnt_it = chunk_subblock_count_.find(cid);
+  if (cnt_it != chunk_subblock_count_.end()) {
+    base_subblock_count = cnt_it->second;
   }
+
+  const float query_matched_ratio =
+      query_subblock_count > 0
+          ? static_cast<float>(matched_query_subblocks) /
+                static_cast<float>(query_subblock_count)
+          : 0.0f;
+
+  const float base_matched_ratio =
+      base_subblock_count > 0
+          ? static_cast<float>(matched_base_subblocks) /
+                static_cast<float>(base_subblock_count)
+          : 0.0f;
+
+  const float aligned_ratio =
+      matched_query_subblocks > 0
+          ? static_cast<float>(aligned_subblocks) /
+                static_cast<float>(matched_query_subblocks)
+          : 0.0f;
+
+  // Jaccard proxy：
+  // 由于命中是多对多关系，这里使用 min(query覆盖数, base覆盖数)
+  // 作为 intersection 的保守近似。
+  const int intersection_proxy =
+      std::min(matched_query_subblocks, matched_base_subblocks);
+
+  const int union_proxy =
+      query_subblock_count + base_subblock_count - intersection_proxy;
+
+  const float jaccard_proxy =
+      union_proxy > 0
+          ? static_cast<float>(intersection_proxy) /
+                static_cast<float>(union_proxy)
+          : 0.0f;
+
+  // 绝对覆盖阈值
+  if (matched_query_subblocks < min_matched_subblocks_) {
+    continue;
+  }
+
+  // aligned 硬阈值，默认 0 等于关闭
+  if (aligned_subblocks < min_aligned_subblocks_) {
+    continue;
+  }
+
+  // Jaccard proxy 阈值，默认 0 等于关闭
+  if (jaccard_proxy < min_jaccard_proxy_) {
+    continue;
+  }
+
+  const float order_consistency =
+      ComputeOrderConsistency(stat.matched_ranks);
+
+  // 当前建议保留你实验较好的组合 score
+  const float score = jaccard_proxy;
+  // const float score = 
+  //     6.0f * static_cast<float>(matched_query_subblocks) +
+  //     3.0f * static_cast<float>(aligned_subblocks) +
+  //     4.0f * order_consistency;
+
+  scored.push_back({
+      cid,
+      matched_query_subblocks,
+      matched_base_subblocks,
+      aligned_subblocks,
+      query_subblock_count,
+      base_subblock_count,
+      query_matched_ratio,
+      base_matched_ratio,
+      aligned_ratio,
+      jaccard_proxy,
+      order_consistency,
+      score
+  });
+}
 
   std::sort(scored.begin(), scored.end(),
             [](const auto &a, const auto &b) {
@@ -208,25 +318,42 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
     }
 
     CDFECandidateDebugInfo info;
+
+    // info.id = cand.id;
+    // info.query_subblocks = query_subblock_count;
+    // info.base_subblocks = base_subblock_count;
+    // info.matched_subblocks = cand.matched_subblocks;
+    // info.aligned_subblocks = cand.aligned_subblocks;
+    // info.order_consistency = cand.order_consistency;
+    // info.score = cand.score;
+
+    // if (query_subblock_count > 0) {
+    //   info.matched_ratio =
+    //       static_cast<float>(cand.matched_subblocks) /
+    //       static_cast<float>(query_subblock_count);
+    // }
+
+    // if (cand.matched_subblocks > 0) {
+    //   info.aligned_ratio =
+    //       static_cast<float>(cand.aligned_subblocks) /
+    //       static_cast<float>(cand.matched_subblocks);
+    // }
+
     info.id = cand.id;
-    info.query_subblocks = query_subblock_count;
-    info.base_subblocks = base_subblock_count;
-    info.matched_subblocks = cand.matched_subblocks;
+    info.query_subblocks = cand.query_subblock_count;
+    info.base_subblocks = cand.base_subblock_count;
+
+    info.matched_query_subblocks = cand.matched_query_subblocks;
+    info.matched_base_subblocks = cand.matched_base_subblocks;
     info.aligned_subblocks = cand.aligned_subblocks;
+
+    info.query_matched_ratio = cand.query_matched_ratio;
+    info.base_matched_ratio = cand.base_matched_ratio;
+    info.aligned_ratio = cand.aligned_ratio;
+    info.jaccard_proxy = cand.jaccard_proxy;
+
     info.order_consistency = cand.order_consistency;
     info.score = cand.score;
-
-    if (query_subblock_count > 0) {
-      info.matched_ratio =
-          static_cast<float>(cand.matched_subblocks) /
-          static_cast<float>(query_subblock_count);
-    }
-
-    if (cand.matched_subblocks > 0) {
-      info.aligned_ratio =
-          static_cast<float>(cand.aligned_subblocks) /
-          static_cast<float>(cand.matched_subblocks);
-    }
 
     last_topk_debug_infos_.push_back(info);
     result.push_back(cand.id);
@@ -266,10 +393,13 @@ CDFESetOrderV2Index::GetBaseChunkCandidates(const Feature &feat,
                 << "(id=" << info.id
                 << ", q_subblocks=" << info.query_subblocks
                 << ", b_subblocks=" << info.base_subblocks
-                << ", matched=" << info.matched_subblocks
+                << ", matched_q=" << info.matched_query_subblocks
+                << ", matched_b=" << info.matched_base_subblocks
                 << ", aligned=" << info.aligned_subblocks
-                << ", matched_ratio=" << info.matched_ratio
+                << ", q_matched_ratio=" << info.query_matched_ratio
+                << ", b_matched_ratio=" << info.base_matched_ratio
                 << ", aligned_ratio=" << info.aligned_ratio
+                << ", jaccard=" << info.jaccard_proxy
                 << ", order=" << info.order_consistency
                 << ", score=" << info.score
                 << ") ";

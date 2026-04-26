@@ -159,11 +159,14 @@ struct CandidateDeltaDebug {
 
   int query_subblocks = 0;
   int base_subblocks = 0;
-  int matched_subblocks = 0;
+  int matched_query_subblocks = 0;
+  int matched_base_subblocks = 0;
   int aligned_subblocks = 0;
 
-  float matched_ratio = 0.0f;
+  float query_matched_ratio = 0.0f;
+  float base_matched_ratio = 0.0f;
   float aligned_ratio = 0.0f;
+  float jaccard_proxy = 0.0f;
   float order_consistency = 0.0f;
   float score = 0.0f;
 };
@@ -189,10 +192,14 @@ for (size_t rank = 0; rank < candidate_ids.size(); ++rank) {
 
     rec.query_subblocks = info.query_subblocks;
     rec.base_subblocks = info.base_subblocks;
-    rec.matched_subblocks = info.matched_subblocks;
+    rec.matched_query_subblocks = info.matched_query_subblocks;
+    rec.matched_base_subblocks = info.matched_base_subblocks;
     rec.aligned_subblocks = info.aligned_subblocks;
-    rec.matched_ratio = info.matched_ratio;
+
+    rec.query_matched_ratio = info.query_matched_ratio;
+    rec.base_matched_ratio = info.base_matched_ratio;
     rec.aligned_ratio = info.aligned_ratio;
+    rec.jaccard_proxy = info.jaccard_proxy;
     rec.order_consistency = info.order_consistency;
     rec.score = info.score;
   }
@@ -311,10 +318,13 @@ if (cdfe_pair_debug_log.is_open()) {
         << "(id=" << rec.id
         << ", q_subblocks=" << rec.query_subblocks
         << ", b_subblocks=" << rec.base_subblocks
-        << ", matched=" << rec.matched_subblocks
+        << ", matched_q=" << rec.matched_query_subblocks
+        << ", matched_b=" << rec.matched_base_subblocks
         << ", aligned=" << rec.aligned_subblocks
-        << ", matched_ratio=" << rec.matched_ratio
+        << ", q_matched_ratio=" << rec.query_matched_ratio
+        << ", b_matched_ratio=" << rec.base_matched_ratio
         << ", aligned_ratio=" << rec.aligned_ratio
+        << ", jaccard=" << rec.jaccard_proxy
         << ", order=" << rec.order_consistency
         << ", score=" << rec.score;
 
@@ -462,25 +472,29 @@ DeltaCompression::DeltaCompression() {
   size_t topk_candidates =
       static_cast<size_t>(
           feature->get_as<int64_t>("topk_candidates").value_or(4));
-  int min_matched_subblocks =
-      feature->get_as<int64_t>("min_matched_subblocks").value_or(4);
-  int min_aligned_subblocks =
-      feature->get_as<int64_t>("min_aligned_subblocks").value_or(2);
-  float pos_tolerance =
-      static_cast<float>(
-          feature->get_as<double>("pos_tolerance").value_or(0.15));
-  size_t hot_posting_limit =
-      static_cast<size_t>(
-          feature->get_as<int64_t>("hot_posting_limit").value_or(256));
-  float order_lambda =
-      static_cast<float>(
-          feature->get_as<double>("order_lambda").value_or(2.0));
+      int min_matched_subblocks =
+          feature->get_as<int64_t>("min_matched_subblocks").value_or(4);
+      int min_aligned_subblocks =
+          feature->get_as<int64_t>("min_aligned_subblocks").value_or(2);
+      float min_jaccard_proxy =
+          static_cast<float>(
+              feature->get_as<double>("min_jaccard_proxy").value_or(0.0));
+      float pos_tolerance =
+          static_cast<float>(
+              feature->get_as<double>("pos_tolerance").value_or(0.15));
+      size_t hot_posting_limit =
+          static_cast<size_t>(
+              feature->get_as<int64_t>("hot_posting_limit").value_or(256));
+      float order_lambda =
+          static_cast<float>(
+              feature->get_as<double>("order_lambda").value_or(2.0));
 
   this->feature_ = std::make_unique<CDFESetOrderV2Feature>(params);
   this->index_ = std::make_unique<CDFESetOrderV2Index>(
       topk_candidates,
       min_matched_subblocks,
       min_aligned_subblocks,
+      min_jaccard_proxy,
       pos_tolerance,
       hot_posting_limit,
       order_lambda);
@@ -488,6 +502,7 @@ DeltaCompression::DeltaCompression() {
   LOG(INFO) << "Add CDFE-SetOrder-v2 feature extractor"
             << " min_subblock_size=" << params.min_subblock_size
             << " max_subblock_size=" << params.max_subblock_size
+            << " min_jaccard_proxy=" << min_jaccard_proxy
             << " boundary_divisor=" << params.boundary_divisor
             << " split_window_size=" << params.split_window_size
             << " feature_window_size=" << params.feature_window_size
