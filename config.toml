@@ -30,6 +30,7 @@ pos_tolerance = 0.15
 hot_posting_limit = 64
 order_lambda = 4.0
 
+enable_cdfe_debug_log = false
 
 [chunker]
 # one of fast-cdc, rabin-cdc
