@@ -67,18 +67,6 @@ void DeltaCompression::AddFile(const std::string &file_name) {
       total_size_compressed_ += delta_chunk->len();
     };
 
-    // auto feature = (*feature_)(chunk);
-    // auto base_chunk_id = index_->GetBaseChunkID(feature);
-    // if (!base_chunk_id.has_value()) {
-    //   index_->AddFeature(feature, chunk->id());
-    //   write_base_chunk(chunk);
-    //   continue;
-    // }
-
-    // auto delta_chunk =
-    //     storage_->GetDeltaEncodedChunk(chunk, base_chunk_id.value());
-    // write_delta_chunk(chunk, delta_chunk, base_chunk_id.value());
-
     //cdfe-v2
     auto feature = (*feature_)(chunk);
 
@@ -90,39 +78,6 @@ void DeltaCompression::AddFile(const std::string &file_name) {
         static_cast<size_t>(
             feature_cfg->get_as<int64_t>("topk_candidates").value_or(1));
 
-    // auto candidate_ids = index_->GetBaseChunkCandidates(feature, topk_candidates);
-
-    // if (candidate_ids.empty()) {
-    //   index_->AddFeature(feature, chunk->id());
-    //   write_base_chunk(chunk);
-    //   continue;
-    // }
-
-    // // 对 top-k 候选逐个做真实 delta 编码，选最优 base
-    // std::shared_ptr<Chunk> best_delta_chunk = nullptr;
-    // chunk_id best_base_id = 0;
-    // size_t best_delta_size = std::numeric_limits<size_t>::max();
-
-    // for (auto cid : candidate_ids) {
-    //   auto delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
-    //   if (delta_chunk &&
-    //       static_cast<size_t>(delta_chunk->len()) < best_delta_size) {
-    //     best_delta_size = static_cast<size_t>(delta_chunk->len());
-    //     best_delta_chunk = delta_chunk;
-    //     best_base_id = cid;
-    //   }
-    // }
-
-    // // 如果最优 delta 仍然不划算，则退回写 base chunk
-    // if (!best_delta_chunk ||
-    //     best_delta_size >= static_cast<size_t>(chunk->len())) {
-    //   index_->AddFeature(feature, chunk->id());
-    //   write_base_chunk(chunk);
-    //   continue;
-    // }
-
-    // write_delta_chunk(chunk, best_delta_chunk, best_base_id);
-    // 为了和 cdfe_topk_debug.log 对齐，
 // 为了和 cdfe_topk_debug.log 对齐，
 // 这里每调用一次 GetBaseChunkCandidates，就递增一次 query id。
 static size_t cdfe_debug_query_count = 0;
@@ -454,20 +409,40 @@ DeltaCompression::DeltaCompression() {
   //cdfe-v2      
   if (feature_type == "cdfe-setorder-v2") {
   CDFEParams params;
-  params.min_subblock_size =
-      feature->get_as<int64_t>("min_subblock_size").value_or(64);
-  params.max_subblock_size =
-      feature->get_as<int64_t>("max_subblock_size").value_or(512);
-  params.boundary_divisor =
-      static_cast<uint64_t>(
-          feature->get_as<int64_t>("boundary_divisor").value_or(16));
+  // params.min_subblock_size =
+  //     feature->get_as<int64_t>("min_subblock_size").value_or(64);
+  // params.max_subblock_size =
+  //     feature->get_as<int64_t>("max_subblock_size").value_or(512);
+  // params.boundary_divisor =
+  //     static_cast<uint64_t>(
+  //         feature->get_as<int64_t>("boundary_divisor").value_or(16));
 
-  params.split_window_size =
-      feature->get_as<int64_t>("split_window_size").value_or(16);
-  params.feature_window_size =
-      feature->get_as<int64_t>("feature_window_size").value_or(16);
-  params.local_features_per_subblock =
-      feature->get_as<int64_t>("local_features_per_subblock").value_or(2);
+  // params.split_window_size =
+  //     feature->get_as<int64_t>("split_window_size").value_or(16);
+  // params.feature_window_size =
+  //     feature->get_as<int64_t>("feature_window_size").value_or(16);
+  // params.local_features_per_subblock =
+  //     feature->get_as<int64_t>("local_features_per_subblock").value_or(2);
+    params.min_subblock_size =
+      static_cast<int>(feature->get_as<int64_t>("min_subblock_size").value_or(256));
+
+    params.avg_subblock_size =
+        static_cast<int>(feature->get_as<int64_t>("avg_subblock_size").value_or(512));
+
+    params.max_subblock_size =
+        static_cast<int>(feature->get_as<int64_t>("max_subblock_size").value_or(1024));
+
+    params.boundary_mask =
+        static_cast<uint64_t>(feature->get_as<int64_t>("boundary_mask").value_or(511));
+
+    params.split_window_size =
+        static_cast<int>(feature->get_as<int64_t>("split_window_size").value_or(32));
+
+    params.feature_window_size =
+        static_cast<int>(feature->get_as<int64_t>("feature_window_size").value_or(16));
+
+    // 固定为 1；保留读取也可以，但不再用于循环生成多个 feature
+    params.local_features_per_subblock = 1;
 
   size_t topk_candidates =
       static_cast<size_t>(
@@ -501,12 +476,14 @@ DeltaCompression::DeltaCompression() {
 
   LOG(INFO) << "Add CDFE-SetOrder-v2 feature extractor"
             << " min_subblock_size=" << params.min_subblock_size
+            << " avg_subblock_size=" << params.avg_subblock_size
             << " max_subblock_size=" << params.max_subblock_size
-            << " min_jaccard_proxy=" << min_jaccard_proxy
-            << " boundary_divisor=" << params.boundary_divisor
+            << " boundary_mask=" << params.boundary_mask
             << " split_window_size=" << params.split_window_size
             << " feature_window_size=" << params.feature_window_size
-            << " topk_candidates=" << topk_candidates;
+            << " local_features_per_subblock=1"
+            << " topk_candidates=" << topk_candidates
+            << " min_jaccard_proxy=" << min_jaccard_proxy;
 } else {
   if (!feature_index_map.count(feature_type))
     LOG(FATAL) << "Unknown feature type " << feature_type;
@@ -515,11 +492,7 @@ DeltaCompression::DeltaCompression() {
   this->feature_ = std::move(feature_ptr);
   this->index_ = std::move(index_ptr);
 }        
-  // if (!feature_index_map.count(feature_type))
-  //   LOG(FATAL) << "Unknown feature type " << feature_type;
-  // auto [feature_ptr, index_ptr] = feature_index_map[feature_type]();
-  // this->feature_ = std::move(feature_ptr);
-  // this->index_ = std::move(index_ptr);
+
 
   this->dedup_ = std::make_unique<Dedup>(dedup_index_path);
 

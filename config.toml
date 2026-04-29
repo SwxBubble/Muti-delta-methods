@@ -9,21 +9,23 @@ chunk_meta_path = "./test_data/default.meta"
 file_meta_path = "./test_data/default.file"
 
 [feature]
-# one of finesse, odess, n-transform, palantir, bestfit, palantir2 ,argus
 type = "cdfe-setorder-v2"
 
 min_subblock_size = 256
+avg_subblock_size = 512
 max_subblock_size = 1024
-boundary_divisor = 64
+
+boundary_mask = 511
 
 split_window_size = 32
 feature_window_size = 16
+
 local_features_per_subblock = 1
 
-topk_candidates = 4
-min_matched_subblocks = 4
+topk_candidates = 3
+min_matched_subblocks = 0
 min_aligned_subblocks = 0
-min_jaccard_proxy = 0.14
+min_jaccard_proxy = 0.15
 pos_tolerance = 0.15
 hot_posting_limit = 64
 order_lambda = 4.0

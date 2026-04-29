@@ -8,15 +8,29 @@
 
 namespace Delta {
 
+// struct CDFEParams {
+//   int min_subblock_size = 64;
+//   int max_subblock_size = 512;
+//   uint64_t boundary_divisor = 16;
+
+//   int split_window_size = 16;    // 子块划分窗口
+//   int feature_window_size = 16;  // 子块特征窗口
+
+//   int local_features_per_subblock = 2; // 先固定为 2
+// };
 struct CDFEParams {
-  int min_subblock_size = 64;
-  int max_subblock_size = 512;
-  uint64_t boundary_divisor = 16;
+    int min_subblock_size = 256;
+    int avg_subblock_size = 512;
+    int max_subblock_size = 1024;
 
-  int split_window_size = 16;    // 子块划分窗口
-  int feature_window_size = 16;  // 子块特征窗口
+    // 单 mask：要求形如 2^k - 1，例如 0x1FF = 511
+    uint64_t boundary_mask = 0x1FF;
 
-  int local_features_per_subblock = 2; // 先固定为 2
+    int split_window_size = 32;
+    int feature_window_size = 16;
+
+    // 现在固定每个 subblock 只产出 1 个 feature
+    int local_features_per_subblock = 1;
 };
 
 class Chunk;
@@ -40,8 +54,9 @@ private:
 
   std::vector<SubblockSpan> SplitIntoSubblocks(const uint8_t *buf,int chunk_len) const;
 
-  std::array<uint64_t, 2> ExtractLocalRobustFeatures(const uint8_t *sbuf,
-                                                     int slen) const;
+  // std::array<uint64_t, 2> ExtractLocalRobustFeatures(const uint8_t *sbuf,
+  //                                                    int slen) const;
+  uint64_t ExtractOneLocalFeature(const uint8_t *sbuf, int slen) const;
 
   CDFESetOrderFeature BuildFeatureSet(const uint8_t *buf, int chunk_len) const;
 };
