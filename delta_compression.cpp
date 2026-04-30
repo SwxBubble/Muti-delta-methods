@@ -56,10 +56,13 @@ void DeltaCompression::AddFile(const std::string &file_name) {
         chunk = chunker_->GetNextChunk();
         chunking_time_ns_ += ElapsedNs(t);
     }
-    if (nullptr == chunk) break;
-      break;
-    if (-1 == file_meta.start_chunk_id)
-      file_meta.start_chunk_id = chunk->id();
+    if (nullptr == chunk) {
+        break;
+    }
+
+    if (-1 == file_meta.start_chunk_id) {
+        file_meta.start_chunk_id = chunk->id();
+    }
     //uint32_t dedup_base_id = dedup_->ProcessChunk(chunk);
     uint32_t dedup_base_id;
     {
@@ -82,22 +85,6 @@ void DeltaCompression::AddFile(const std::string &file_name) {
       duplicate_chunk_count_++;
       continue;
     }
-
-    // auto write_base_chunk = [this](const std::shared_ptr<Chunk> &chunk) {
-    //   storage_->WriteBaseChunk(chunk);
-    //   base_chunk_count_++;
-    //   total_size_compressed_ += chunk->len();
-    // };
-
-    // auto write_delta_chunk = [this](const std::shared_ptr<Chunk> &chunk,
-    //                                 const std::shared_ptr<Chunk> &delta_chunk,
-    //                                 const uint32_t base_chunk_id) {
-    //   chunk_size_before_delta_ += chunk->len();
-    //   storage_->WriteDeltaChunk(delta_chunk, base_chunk_id);
-    //   delta_chunk_count_++;
-    //   chunk_size_after_delta_ += delta_chunk->len();
-    //   total_size_compressed_ += delta_chunk->len();
-    // };
 
     auto write_base_chunk = [this](const std::shared_ptr<Chunk> &chunk) {
     auto t = Clock::now();
@@ -156,15 +143,6 @@ std::vector<chunk_id> candidate_ids;
 candidate_query_count_++;
 candidate_total_count_ += candidate_ids.size();
 
-// 从 CDFESetOrderV2Index 中取出本次 top-k 的子块诊断信息。
-// 这些信息由 index/cdfe_setorder_v2_index.cpp 中的
-// last_topk_debug_infos_ 保存。
-// std::vector<CDFECandidateDebugInfo> topk_debug_infos;
-// if (auto *cdfe_index =
-//         dynamic_cast<CDFESetOrderV2Index *>(index_.get())) {
-//   topk_debug_infos = cdfe_index->GetLastTopKDebugInfos();
-// }
-
 std::vector<CDFECandidateDebugInfo> topk_debug_infos;
 
 if (enable_cdfe_debug_log_) {
@@ -175,11 +153,6 @@ if (enable_cdfe_debug_log_) {
 }
 
 
-// if (candidate_ids.empty()) {
-//   index_->AddFeature(feature, chunk->id());
-//   write_base_chunk(chunk);
-//   continue;
-// }
 
 if (candidate_ids.empty()) {
     {
@@ -227,70 +200,24 @@ if (enable_cdfe_debug_log_) {
     delta_debug_records.reserve(candidate_ids.size());
 }
 
-// for (size_t rank = 0; rank < candidate_ids.size(); ++rank) {
-//   auto cid = candidate_ids[rank];
-//   //auto delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
-//   std::shared_ptr<Chunk> delta_chunk;
-//   {
-//       auto t = Clock::now();
-//       delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
-//       delta_encode_time_ns_ += ElapsedNs(t);
-//   }
-//   delta_attempt_count_++;
-
-//   if (delta_chunk) {
-//       valid_delta_attempt_count_++;
-//   }
-
-//   CandidateDeltaDebug rec;
-//   rec.rank = rank;
-//   rec.id = cid;
-//   rec.delta_size = 0;
-//   rec.valid = false;
-
-//   // 将 index 层保存的子块诊断信息合并进来。
-//   // 正常情况下 topk_debug_infos[rank].id 应该和 candidate_ids[rank] 一致。
-//   if (rank < topk_debug_infos.size() &&
-//       topk_debug_infos[rank].id == cid) {
-//     const auto &info = topk_debug_infos[rank];
-
-//     rec.query_subblocks = info.query_subblocks;
-//     rec.base_subblocks = info.base_subblocks;
-//     rec.matched_query_subblocks = info.matched_query_subblocks;
-//     rec.matched_base_subblocks = info.matched_base_subblocks;
-//     rec.aligned_subblocks = info.aligned_subblocks;
-
-//     rec.query_matched_ratio = info.query_matched_ratio;
-//     rec.base_matched_ratio = info.base_matched_ratio;
-//     rec.aligned_ratio = info.aligned_ratio;
-//     rec.jaccard_proxy = info.jaccard_proxy;
-//     rec.order_consistency = info.order_consistency;
-//     rec.score = info.score;
-//   }
-
-//   if (delta_chunk) {
-//     const size_t cur_delta_size =
-//         static_cast<size_t>(delta_chunk->len());
-
-//     rec.delta_size = cur_delta_size;
-//     rec.valid = true;
-
-//     if (cur_delta_size < best_delta_size) {
-//       best_delta_size = cur_delta_size;
-//       best_delta_chunk = delta_chunk;
-//       best_base_id = cid;
-//       best_rank = static_cast<int>(rank);
-//     }
-//   }
-
-//   delta_debug_records.push_back(rec);
-// }
-
 
 for (size_t rank = 0; rank < candidate_ids.size(); ++rank) {
     auto cid = candidate_ids[rank];
 
-    auto delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
+    //auto delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
+    std::shared_ptr<Chunk> delta_chunk;
+
+    {
+        auto t = Clock::now();
+        delta_chunk = storage_->GetDeltaEncodedChunk(chunk, cid);
+        delta_encode_time_ns_ += ElapsedNs(t);
+    }
+
+    delta_attempt_count_++;
+
+    if (delta_chunk) {
+        valid_delta_attempt_count_++;
+    }
 
     if (delta_chunk) {
         const size_t cur_delta_size =
@@ -341,6 +268,7 @@ for (size_t rank = 0; rank < candidate_ids.size(); ++rank) {
 
 
 if (enable_cdfe_debug_log_){
+  auto debug_t = Clock::now();
 // 旧日志：只记录 top-k 的真实 delta size。
 // 这个日志可以继续保留，用于和之前结果对比。
   static std::ofstream cdfe_delta_debug_log(
@@ -471,14 +399,8 @@ if (enable_cdfe_debug_log_){
     cdfe_pair_debug_log << std::endl;
     cdfe_pair_debug_log.flush();
   }
+  debug_log_time_ns_ += ElapsedNs(debug_t);
 }
-// 如果最优 delta 仍然不划算，则退回写 base chunk
-// if (!best_delta_chunk ||
-//     best_delta_size >= static_cast<size_t>(chunk->len())) {
-//   index_->AddFeature(feature, chunk->id());
-//   write_base_chunk(chunk);
-//   continue;
-// }
 
 if (!best_delta_chunk || best_delta_size >= static_cast<size_t>(chunk->len())) {
     {
@@ -503,35 +425,18 @@ write_delta_chunk(chunk, best_delta_chunk, best_base_id);
   }
 }
 
-// DeltaCompression::~DeltaCompression() {
-//   auto print_ratio = [](size_t a, size_t b) {
-//     double ratio = (double)a / (double)b;
-//     std::cout << std::fixed << std::setprecision(1);
-//     std::cout << "(" << ratio * 100 << "%)" << std::endl;
-//     std::cout << std::defaultfloat;
-//   };
-//   uint32_t chunk_count =
-//       base_chunk_count_ + delta_chunk_count_ + duplicate_chunk_count_;
-//   std::cout << "Total chunk count: " << chunk_count << std::endl;
-//   std::cout << "Base chunk count: " << base_chunk_count_;
-//   print_ratio(base_chunk_count_, chunk_count);
-//   std::cout << "Delta chunk count: " << delta_chunk_count_;
-//   print_ratio(delta_chunk_count_, chunk_count);
-//   std::cout << "Duplicate chunk count: " << duplicate_chunk_count_;
-//   print_ratio(duplicate_chunk_count_, chunk_count);
-//   std::cout << "DCR (Delta Compression Ratio): ";
-//   print_ratio(total_size_origin_, total_size_compressed_);
-//   std::cout << "before " << total_size_origin_
-//             << " after: " << total_size_compressed_ << std::endl;
-//   std::cout << "DCE (Delta Compression Efficiency): ";
-//   print_ratio(chunk_size_after_delta_, chunk_size_before_delta_);
-// }
 
 DeltaCompression::~DeltaCompression() {
     auto print_ratio = [](size_t a, size_t b) {
-        double ratio = (double)a / (double)b;
         std::cout << std::fixed << std::setprecision(1);
-        std::cout << "(" << ratio * 100 << "%)" << std::endl;
+
+        if (b == 0) {
+            std::cout << "(0.0%)" << std::endl;
+        } else {
+            double ratio = static_cast<double>(a) / static_cast<double>(b);
+            std::cout << "(" << ratio * 100 << "%)" << std::endl;
+        }
+
         std::cout << std::defaultfloat;
     };
 
@@ -753,6 +658,8 @@ DeltaCompression::DeltaCompression() {
       float order_lambda =
           static_cast<float>(
               feature->get_as<double>("order_lambda").value_or(2.0));
+      enable_cdfe_debug_log_ =
+          feature->get_as<bool>("enable_cdfe_debug_log").value_or(false);
 
   this->feature_ = std::make_unique<CDFESetOrderV2Feature>(params);
   this->index_ = std::make_unique<CDFESetOrderV2Index>(
