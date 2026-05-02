@@ -8,16 +8,6 @@
 
 namespace Delta {
 
-// struct CDFEParams {
-//   int min_subblock_size = 64;
-//   int max_subblock_size = 512;
-//   uint64_t boundary_divisor = 16;
-
-//   int split_window_size = 16;    // 子块划分窗口
-//   int feature_window_size = 16;  // 子块特征窗口
-
-//   int local_features_per_subblock = 2; // 先固定为 2
-// };
 struct CDFEParams {
     int min_subblock_size = 256;
     int avg_subblock_size = 512;
@@ -59,6 +49,37 @@ private:
   uint64_t ExtractOneLocalFeature(const uint8_t *sbuf, int slen) const;
 
   CDFESetOrderFeature BuildFeatureSet(const uint8_t *buf, int chunk_len) const;
+};
+
+// CDFE-SuperFeature 先作为一个独立的 FeatureCalculator 实现，后续根据需要再考虑和 CDFE-SetOrderV2Feature 的关系。  
+class CDFESuperFeature : public FeatureCalculator {
+public:
+  explicit CDFESuperFeature(const CDFEParams &params,
+                            int sf_cnt = 3,
+                            int sf_subf = 4)
+      : params_(params), sf_cnt_(sf_cnt), sf_subf_(sf_subf) {}
+
+  Feature operator()(std::shared_ptr<Chunk> chunk) override;
+  ~CDFESuperFeature() override;
+
+private:
+  CDFEParams params_;
+  int sf_cnt_;
+  int sf_subf_;
+  mutable size_t total_chunks_ = 0; 
+  mutable size_t total_subblocks_ = 0;
+  mutable size_t boundary_cut_subblocks_ = 0;
+  mutable size_t forced_cut_subblocks_ = 0;
+
+  std::vector<SubblockSpan> SplitIntoSubblocks(const uint8_t *buf,
+                                               int chunk_len) const;
+
+  uint64_t ExtractOneLocalFeature(const uint8_t *sbuf, int slen) const;
+
+  std::vector<uint64_t> BuildCDFEValues(const uint8_t *buf,
+                                        int chunk_len) const;
+
+  std::vector<uint64_t> BuildSuperFeatures(const std::vector<uint64_t> &values) const;
 };
 
 } // namespace Delta

@@ -615,8 +615,49 @@ DeltaCompression::DeltaCompression() {
           declare_feature_type(palantir5, PalantirFeature, PalantirIndex5), // <---  PalantirIndex5 在4的基础上进一步优化了性能
           declare_feature_type(argus, ArgusFeature, ArgusIndex), // <---  ArgusFeature + ArgusIndex 实现了论文中基于 min-hash 的 Argus 方法，作为一个完全不同设计思路的对照组加入实验
           declare_feature_type(bestfit, OdessSubfeatures, BestFitIndex)};
-  //cdfe-v2      
-  if (feature_type == "cdfe-setorder-v2") {
+  //cdfe-v2
+  if (feature_type == "cdfe-superfeature") {
+    CDFEParams params;
+
+    params.min_subblock_size =
+        static_cast<int>(feature->get_as<int64_t>("min_subblock_size").value_or(256));
+
+    params.avg_subblock_size =
+        static_cast<int>(feature->get_as<int64_t>("avg_subblock_size").value_or(512));
+
+    params.max_subblock_size =
+        static_cast<int>(feature->get_as<int64_t>("max_subblock_size").value_or(1024));
+
+    params.boundary_mask =
+        static_cast<uint64_t>(feature->get_as<int64_t>("boundary_mask").value_or(511));
+
+    params.split_window_size =
+        static_cast<int>(feature->get_as<int64_t>("split_window_size").value_or(32));
+
+    params.feature_window_size =
+        static_cast<int>(feature->get_as<int64_t>("feature_window_size").value_or(16));
+
+    params.local_features_per_subblock = 1;
+
+    int sf_cnt =
+        static_cast<int>(feature->get_as<int64_t>("sf_cnt").value_or(3));
+
+    int sf_subf =
+        static_cast<int>(feature->get_as<int64_t>("sf_subf").value_or(4));
+
+    this->feature_ = std::make_unique<CDFESuperFeature>(params, sf_cnt, sf_subf);
+    this->index_ = std::make_unique<SuperFeatureIndex>(sf_cnt);
+
+    LOG(INFO) << "Add CDFE-SuperFeature extractor"
+              << " min_subblock_size=" << params.min_subblock_size
+              << " avg_subblock_size=" << params.avg_subblock_size
+              << " max_subblock_size=" << params.max_subblock_size
+              << " boundary_mask=" << params.boundary_mask
+              << " split_window_size=" << params.split_window_size
+              << " feature_window_size=" << params.feature_window_size
+              << " sf_cnt=" << sf_cnt
+              << " sf_subf=" << sf_subf;
+} else if (feature_type == "cdfe-setorder-v2") {
   CDFEParams params;
     params.min_subblock_size =
       static_cast<int>(feature->get_as<int64_t>("min_subblock_size").value_or(256));

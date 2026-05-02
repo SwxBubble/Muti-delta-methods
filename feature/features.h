@@ -86,6 +86,9 @@ public:
                const int mask = default_odess_mask)
       : sf_cnt_(sf_cnt), sf_subf_(sf_subf), mask_(mask) {}
 
+  ~OdessFeature() override;
+
+
   Feature operator()(std::shared_ptr<Chunk> chunk) override;
 
 private:
@@ -95,6 +98,23 @@ private:
   const int sf_subf_;
 
   const int mask_;
+  
+  // ===== Odess sampling statistics =====
+  uint64_t total_chunks_ = 0;
+  uint64_t total_chunk_bytes_ = 0;
+
+  // 满足 (finger_print & mask_) == 0 的采样点总数
+  uint64_t total_sampled_points_ = 0;
+
+  // 一个采样点都没有的 chunk 数
+  uint64_t zero_sample_chunks_ = 0;
+
+  // 每个 chunk 理论生成 sf_cnt_ * sf_subf_ 个 sub-features
+  uint64_t total_generated_subfeatures_ = 0;
+
+  // 最终 sub-features 来自多少个不同采样点，用于观察 Odess useless feature 问题
+  uint64_t total_unique_source_points_ = 0;
+  uint64_t total_duplicate_source_features_ = 0;
 };
 
 class OdessSubfeatures : public FeatureCalculator {

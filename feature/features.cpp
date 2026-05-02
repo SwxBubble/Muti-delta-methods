@@ -5,6 +5,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <queue>
+
+#include <iomanip>
+#include <iostream>
+#include <unordered_set>
+
 namespace Delta {
 Feature FinesseFeature::operator()(std::shared_ptr<Chunk> chunk) {
   int sub_chunk_length = chunk->len() / (sf_subf_ * sf_cnt_);
@@ -89,39 +94,182 @@ Feature NTransformFeature::operator()(std::shared_ptr<Chunk> chunk) {
 /*
 64bit 的指纹还是截断成了32bit的transform特征，主要是为了适配odess subfeature的特征类型变化，改为vector<uint32_t>，如果不改的话，odess subfeature的特征类型是vector<uint64_t>，就无法直接使用了。
 */
+// Feature OdessFeature::operator()(std::shared_ptr<Chunk> chunk) {
+//   int features_num = sf_cnt_ * sf_subf_;
+//   std::vector<uint32_t> sub_features(features_num, 0);
+//   std::vector<uint64_t> super_features(sf_cnt_, 0);
+
+//   int chunk_length = chunk->len();
+//   uint8_t *content = chunk->buf();
+//   uint64_t finger_print = 0;
+//   // calculate sub features.
+//   for (int i = 0; i < chunk_length; i++) {
+//     finger_print = (finger_print << 1) + GEAR_TABLE[content[i]];
+//     if ((finger_print & mask_) == 0) {
+//       for (int j = 0; j < features_num; j++) {
+//         const uint32_t transform = (M[j] * finger_print + A[j]);
+//         // we need to guarantee that when sub_features[i] is not inited,
+//         // always set its value
+//         if (sub_features[j] >= transform || 0 == sub_features[j])
+//           sub_features[j] = transform;
+//       }
+//     }
+//   }
+
+//   // group sub features into super features.
+//   auto hash_buf = (const uint8_t *const)(sub_features.data());
+//   for (int i = 0; i < sf_cnt_; i++) {
+//     uint64_t hash_value = 0;
+//     auto this_hash_buf = hash_buf + i * sf_subf_ * sizeof(uint32_t);
+//     for (int j = 0; j < sf_subf_ * sizeof(uint32_t); j++) {
+//       hash_value = (hash_value << 1) + GEAR_TABLE[this_hash_buf[j]];
+//     }
+//     super_features[i] = hash_value;
+//   }
+//   return super_features;
+// }
+
 Feature OdessFeature::operator()(std::shared_ptr<Chunk> chunk) {
   int features_num = sf_cnt_ * sf_subf_;
+
   std::vector<uint32_t> sub_features(features_num, 0);
   std::vector<uint64_t> super_features(sf_cnt_, 0);
+
+  // 记录每个 sub-feature 最终由哪个采样点产生
+  // -1 表示没有被任何 sampled point 更新
+  std::vector<int> source_pos(features_num, -1);
 
   int chunk_length = chunk->len();
   uint8_t *content = chunk->buf();
   uint64_t finger_print = 0;
-  // calculate sub features.
+
+  uint64_t sampled_points = 0;
+
+  // calculate sub features
   for (int i = 0; i < chunk_length; i++) {
     finger_print = (finger_print << 1) + GEAR_TABLE[content[i]];
+
     if ((finger_print & mask_) == 0) {
+      sampled_points++;
+
       for (int j = 0; j < features_num; j++) {
-        const uint32_t transform = (M[j] * finger_print + A[j]);
-        // we need to guarantee that when sub_features[i] is not inited,
+        const uint32_t transform =
+            static_cast<uint32_t>(M[j] * finger_print + A[j]);
+
+        // we need to guarantee that when sub_features[j] is not inited,
         // always set its value
-        if (sub_features[j] >= transform || 0 == sub_features[j])
+        if (sub_features[j] >= transform || 0 == sub_features[j]) {
           sub_features[j] = transform;
+          source_pos[j] = i;
+        }
       }
     }
   }
 
-  // group sub features into super features.
-  auto hash_buf = (const uint8_t *const)(sub_features.data());
+  // ===== update Odess statistics =====
+  total_chunks_++;
+  total_chunk_bytes_ += static_cast<uint64_t>(chunk_length);
+  total_sampled_points_ += sampled_points;
+  total_generated_subfeatures_ += static_cast<uint64_t>(features_num);
+
+  if (sampled_points == 0) {
+    zero_sample_chunks_++;
+  }
+
+  std::unordered_set<int> unique_sources;
+  int valid_source_count = 0;
+
+  for (int pos : source_pos) {
+    if (pos >= 0) {
+      unique_sources.insert(pos);
+      valid_source_count++;
+    }
+  }
+
+  const uint64_t unique_cnt =
+      static_cast<uint64_t>(unique_sources.size());
+
+  total_unique_source_points_ += unique_cnt;
+
+  if (valid_source_count > static_cast<int>(unique_cnt)) {
+    total_duplicate_source_features_ +=
+        static_cast<uint64_t>(valid_source_count - unique_cnt);
+  }
+
+  // group sub features into super features
+  auto hash_buf = reinterpret_cast<const uint8_t *>(sub_features.data());
+
   for (int i = 0; i < sf_cnt_; i++) {
     uint64_t hash_value = 0;
     auto this_hash_buf = hash_buf + i * sf_subf_ * sizeof(uint32_t);
-    for (int j = 0; j < sf_subf_ * sizeof(uint32_t); j++) {
+
+    for (int j = 0; j < sf_subf_ * static_cast<int>(sizeof(uint32_t)); j++) {
       hash_value = (hash_value << 1) + GEAR_TABLE[this_hash_buf[j]];
     }
+
     super_features[i] = hash_value;
   }
+
   return super_features;
+}
+
+OdessFeature::~OdessFeature() {
+  std::cout << "\n[Odess Feature Stats]" << std::endl;
+
+  std::cout << "Total chunks processed: "
+            << total_chunks_ << std::endl;
+
+  std::cout << "Total chunk bytes: "
+            << total_chunk_bytes_ << std::endl;
+
+  std::cout << "Total sampled points: "
+            << total_sampled_points_ << std::endl;
+
+  if (total_chunks_ > 0) {
+    std::cout << "Average sampled points per chunk: "
+              << std::fixed << std::setprecision(2)
+              << static_cast<double>(total_sampled_points_) /
+                     static_cast<double>(total_chunks_)
+              << std::defaultfloat << std::endl;
+
+    std::cout << "Average chunk size: "
+              << std::fixed << std::setprecision(2)
+              << static_cast<double>(total_chunk_bytes_) /
+                     static_cast<double>(total_chunks_)
+              << " bytes"
+              << std::defaultfloat << std::endl;
+
+    std::cout << "Zero-sample chunks: "
+              << zero_sample_chunks_ << " ("
+              << std::fixed << std::setprecision(2)
+              << static_cast<double>(zero_sample_chunks_) * 100.0 /
+                     static_cast<double>(total_chunks_)
+              << "%)"
+              << std::defaultfloat << std::endl;
+
+    std::cout << "Average unique source points per chunk: "
+              << std::fixed << std::setprecision(2)
+              << static_cast<double>(total_unique_source_points_) /
+                     static_cast<double>(total_chunks_)
+              << std::defaultfloat << std::endl;
+  }
+
+  std::cout << "Total generated subfeatures: "
+            << total_generated_subfeatures_ << std::endl;
+
+  std::cout << "Duplicate-source subfeatures: "
+            << total_duplicate_source_features_;
+
+  if (total_generated_subfeatures_ > 0) {
+    std::cout << " ("
+              << std::fixed << std::setprecision(2)
+              << static_cast<double>(total_duplicate_source_features_) * 100.0 /
+                     static_cast<double>(total_generated_subfeatures_)
+              << "%)"
+              << std::defaultfloat;
+  }
+
+  std::cout << std::endl << std::endl;
 }
 
 

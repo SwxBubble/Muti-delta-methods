@@ -9,7 +9,7 @@ chunk_meta_path = "./test_data/default.meta"
 file_meta_path = "./test_data/default.file"
 
 [feature]
-# finesse/n-transform/odess/cdfe-setorder-v2
+# finesse/n-transform/odess/cdfe-setorder-v2/cdfe-superfeature
 type = "cdfe-setorder-v2"
 
 min_subblock_size = 256
@@ -23,15 +23,10 @@ feature_window_size = 24
 
 local_features_per_subblock = 1
 
-topk_candidates = 4
-min_matched_subblocks = 0
-min_aligned_subblocks = 0
-min_jaccard_proxy = 0.15
-pos_tolerance = 0.15
-hot_posting_limit = 64
-order_lambda = 4.0
+# 与 N-transform 保持一致：3 个 SF，每个 SF 4 个 sub-feature
+sf_cnt = 3
+sf_subf = 4
 
-# 是否开启日志
 enable_cdfe_debug_log = false
 
 [chunker]
